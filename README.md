@@ -1,1 +1,1 @@
-# yet_another_pytorch_selective_search
+https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
