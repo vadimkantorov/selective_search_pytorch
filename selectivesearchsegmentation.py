@@ -1,5 +1,42 @@
 import cv2
 
+class SelectiveSearchSegmentationStrategyMultipleImpl:
+	def __init__(self):
+		self.strategies = []
+		self.weights = []
+		self.weights_total = 0.0
+
+	def addStrategy(self, g, weight):
+		self.strategies.append(g)
+		self.weights.append(weight)
+		self.weights_total += weight
+
+	@staticemthod
+	def createSelectiveSearchSegmentationStrategyMultiple(s1, s2 = None, s3 = None, s4 = None):
+		s = SelectiveSearchSegmentationStrategyMultipleImpl()
+		
+		if s2 is not None and s3 is not None and s4 is not None:
+			s.addStrategy(s1, 0.25)
+			s.addStrategy(s2, 0.25)
+			s.addStrategy(s3, 0.25)
+			s.addStrategy(s4, 0.25)
+
+		else if s2 is not None and s3 is not None:
+			s.addStrategy(s1, 0.3333)
+			s.addStrategy(s2, 0.3333)
+			s.addStrategy(s3, 0.3333)
+
+		else if s2 is not None:
+			s.addStrategy(s1, 0.5)
+			s.addStrategy(s2, 0.5)
+
+		else:
+			s.addStrategy(s1, 1.0)
+
+		
+		return s
+
+
 def SelectiveSearchSegmentationStrategyColorImpl(r1, r2, img, regions, sizes):
 	img_planes = cv2.split(img)
 	
