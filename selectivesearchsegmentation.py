@@ -1,40 +1,71 @@
 import cv2
 
-class SelectiveSearchSegmentationStrategyMultipleImpl:
+class Region:
 	def __init__(self):
-		self.strategies = []
-		self.weights = []
-		self.weights_total = 0.0
+		self.id = 0
+		self.level = 0
+		self.merged_to = 0
+		self.rank = 0.0
+		self.bounding_box = None
+	
+	def __lt__(self, other):
+		return self.rank < other.rank
 
-	def addStrategy(self, g, weight):
-		self.strategies.append(g)
-		self.weights.append(weight)
-		self.weights_total += weight
+def rectComparator(a, b):
+	if a.x < b.x:
+	       return True
+	if a.x > b.x:
+	       return False
+	if a.y < b.y:
+	       return True
+	if a.y > b.y:
+	       return False
+	if a.width < b.width:
+	       return True
+	if a.width > b.width:
+	       return False
+	if a.height < b.height:
+	       return True
+	if a.height > b.height:
+		return False
+	return False
 
-	@staticemthod
-	def createSelectiveSearchSegmentationStrategyMultiple(s1, s2 = None, s3 = None, s4 = None):
-		s = SelectiveSearchSegmentationStrategyMultipleImpl()
+class Neighbour:
+	def __init__(self):
+		self.from = 0
+		self.to = 0
+		self.similarity = 0.0
 		
+	def __lt__(self, other):
+		return self.similarity < other.similarity
+
+class SelectiveSearchSegmentationStrategyMultipleImpl:
+	def __init__(self, s1, s2 = None, s3 = None, s4 = None):
 		if s2 is not None and s3 is not None and s4 is not None:
-			s.addStrategy(s1, 0.25)
-			s.addStrategy(s2, 0.25)
-			s.addStrategy(s3, 0.25)
-			s.addStrategy(s4, 0.25)
+			self.strategies = [s1, s2, s3, s4]
+			self.weights = [0. 25] * 4
 
 		else if s2 is not None and s3 is not None:
-			s.addStrategy(s1, 0.3333)
-			s.addStrategy(s2, 0.3333)
-			s.addStrategy(s3, 0.3333)
+			self.strategies = [s1, s2, s3]
+			self.weights = [0.3333] * 3
 
 		else if s2 is not None:
-			s.addStrategy(s1, 0.5)
-			s.addStrategy(s2, 0.5)
+			self.strategies = [s1, s2]
+			self.weights = [0.5, 0.5]
 
 		else:
-			s.addStrategy(s1, 1.0)
+			self.strategies = [s1]
+			self.weights = [1.0]
 
 		
 		return s
+
+	def get(self, r1, r2):
+                return sum(self.weights[i] * s.get(r1, r2) for i, s in enumerate(self.strategies)) / sum(self.weights)
+
+	def merge(self, r1, r2): 
+		for s in self.strategies:
+			s.merge(r1, r2);
 
 
 def SelectiveSearchSegmentationStrategyColorImpl(r1, r2, img, regions, sizes):
