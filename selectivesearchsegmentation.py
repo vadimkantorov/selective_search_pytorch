@@ -39,7 +39,7 @@ def selectiveSearch(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 
 		images = [hsv, lab]
 	else:
 		segmentations = [ cv.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 4, inc_k) ]
-		images = [hsv, lab, gray, hsv[..., 0], np.dstack([img_bgr[..., 2], img_bgr[..., 1], I])]
+		images = [hsv, lab, gray, hsv[..., 0], np.dstack([img_bgr[..., 2], img_bgr[..., 1], gray])]
 	
 	
 	all_regions = []
