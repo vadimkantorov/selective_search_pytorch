@@ -18,7 +18,7 @@ class Region:
 @dataclasses.dataclass(order = True)
 class Neighbour:
 	similarity : float
-	from : int
+	fro : int
 	to : int
 	removed : bool
 
@@ -62,7 +62,7 @@ def selectiveSearch(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 
 					points[p[j]].append((j, i))
 					region_areas[p[j]] += 1
 
-					if i > 0 && j > 0:
+					if i > 0 and j > 0:
 						is_neighbour[p[j - 1], p[j]] = is_neighbour[p[j], p[j - 1]] = True
 						is_neighbour[previous_p[j], p[j]] = is_neighbour[p[j], previous_p[j]] = True
 						is_neighbour[previous_p[j - 1], p[j]] = is_neighbour[p[j], previous_p[j - 1]] = True
@@ -98,31 +98,31 @@ def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects)
 		regions.append(Region(id = i, level = i, merged_to = -1, bounding_box = bounding_rects[i]))
 		for j in range(i + 1, nb_segs):
 			if is_neighbour[i, j]:
-				similarities.append(Neighbour(from = i, to = j, similarity = s(i, j), removed = False))
+				similarities.append(Neighbour(fro = i, to = j, similarity = s(i, j), removed = False))
 
 	while similarities:
 		similarities.sort()
 		p = similarities.pop()
 
-		region_from, region_to = regions[p.from], regions[p.to]
-		regions.append(Region(id = min(region_from.id, region_to.id), level = max(region_from.level, region_to.level) + 1, merged_to = -1, bounding_box = bbox_merge(region_from.bounding_box, region_to.bounding_box)))
-		regions[p.from].merged_to = regions[p.to].merged_to = len(regions) - 1
+		region_fro, region_to = regions[p.fro], regions[p.to]
+		regions.append(Region(id = min(region_fro.id, region_to.id), level = max(region_fro.level, region_to.level) + 1, merged_to = -1, bounding_box = bbox_merge(region_fro.bounding_box, region_to.bounding_box)))
+		regions[p.fro].merged_to = regions[p.to].merged_to = len(regions) - 1
 
-		s.merge(region_from.id, region_to.id);
+		s.merge(region_fro.id, region_to.id);
 
-		region_areas[region_from.id] += region_areas[region_to.id]
-		region_areas[region_to.id] = region_areas[region_from.id]
+		region_areas[region_fro.id] += region_areas[region_to.id]
+		region_areas[region_to.id] = region_areas[region_fro.id]
 
 		local_neighbours = set()
 		for similarity in similarities:
-			if p.from in [similarity.from, similarity.to] or p.to in [similarity.from, similarity.to]:
-				local_neighbours.add(similarity.to if similarity.from == p.from or similarity.from == p.to else similarity.from)
+			if p.fro in [similarity.fro, similarity.to] or p.to in [similarity.fro, similarity.to]:
+				local_neighbours.add(similarity.to if similarity.fro == p.fro or similarity.fro == p.to else similarity.fro)
 				similarity.removed = True
 
 		similarities = [sim for sim in similarities if not sim.removed]
 
 		for local_neighbour in local_neighbours:
-			similarities.append(Neighbour(from = len(regions) - 1, to = local_neighbour, similarity = s(regions[n.from].id, regions[n.to].id), removed = False))
+			similarities.append(Neighbour(fro = len(regions) - 1, to = local_neighbour, similarity = s(regions[n.fro].id, regions[n.to].id), removed = False))
 
 	for region in regions:
 		region.rank = random.random() * region.level
