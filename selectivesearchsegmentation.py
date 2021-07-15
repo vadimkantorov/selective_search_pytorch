@@ -205,17 +205,16 @@ class HandcraftedRegionFeatures:
 		totals = np.zeros((nb_segs,), dtype = np.int32) 
 
 		for x in range(regions.total):
-			region = regions[x]
-
 			for p in range(img_channels):
 				for i in range(8):
+					region = regions[x]
 					val = int(img_gaussians[p * 8 + i][x])
-					bin = int(float(val) / (range[1] / histogram_bins_size))
-					self.texture_histograms[region][(p * 8 + i) * histogram_bins_size + bin] += 1
+					bin = int(float(val) / (range_1 / self.texture_histogram_bins_size))
+					self.texture_histograms[region][(p * 8 + i) * self.texture_histogram_bins_size + bin] += 1
 					totals[region] += 1
 
 		for r in range(nb_segs):
-			for h_pos2 in range(histogram_size):
+			for h_pos2 in range(self.texture_histogram_size):
 				self.texture_histograms[r][h_pos2] = float(self.texutre_histograms[r][h_pos2]) / float(totals[r])
 
 	def merge(self, r1, r2):
