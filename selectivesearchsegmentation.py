@@ -88,7 +88,7 @@ def bbox_merge(xywh1, xywh2):
 	return cv2.boundingRect(points1 + points2)
 
 def bbox_size(xywh):
-	return xywh[-2] * xywh[-1]
+	return (xywh[-2], xywh[-1])
 
 def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects):
 	region_areas = region_areas.copy()
@@ -131,7 +131,7 @@ def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects)
 	return regions
 
 class HandcraftedRegionFeatures:
-	def __init__(img, regions, region_areas, color_histogram_bins_size = 25, texture_histogram_bins_size = 10):
+	def __init__(img, regions, region_areas, color_histogram_bins_size = 25, texture_histogram_bins_size = 10, range_1 = 256.0):
 		img_height, img_width, img_channels = img.shape
 		nb_segs = int(regions.max()) + 1
 		
@@ -150,9 +150,11 @@ class HandcraftedRegionFeatures:
 		self.bounding_rects = list(map(cv2.boundingRect, points))
 
 		self.texture_histograms = np.zeros((nb_segs, texture_histogram_bins_size * img_channels * 8), dtype = np.float32)
+		totals = np.zeros((nb_segs,), dtype = np.int32) 
 		img_gaussians = []
 		for p in range(img_channels):
 			img_plane = img[..., p]
+			
 			center = (img_width / 2.0, img_height / 2.0)
 			rot = cv2.getRotationMatrix2D(center, 45.0, 1.0)
 			xywh = cv2.RotatedRect(center, self.img_area, 45.0).boundingRect()
@@ -160,25 +162,25 @@ class HandcraftedRegionFeatures:
 			rot[1, 2] += xywh[-1] / 2.0 - center[1]
 			img_plane_rotated = cv2.warpAffine(img_plane, rot, bbox_size(xywh))
 			img_plane_rotated_size = img_plane_rotated.shape[0] * img_plane_rotated.shape[1]
+			
+			center = (int(img_plane_rotated.shape[1] / 2.0), int(img_plane_rotated.shape[0] / 2.0))
+			rot = cv2.getRotationMatrix2D(center, -45.0, 1.0)
+			xywh2_size = bbox_size(cv2.RotatedRect(center, img_plane_rotated_size, -45.0).boundingRect())
+			start_x, start_y = max(0, (xywh[-2] - img_width) / 2), max(0, (xywh[-1] - img_height) / 2)
+
 			for gr in [(1, 0), (0, 1)]:
-				# X/Y no rot
 				tmp_gradient = cv2.Scharr(img_plane, cv2.CV_32F, *gr)
 				img_gaussians.extend(cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV])
+			
 			for gr in [(1, 0), (0, 1)]:
-				# X/Y, rot
 				tmp_gradient = cv2.Scharr(img_plane_rotated, cv2.CV_32F, *gr)
-				center = (int(img_plane_rotated.shape[1] / 2.0), int(img_plane_rotated.shape[0] / 2.0))
-				rot = cv2.getRotationMatrix2D(center, -45.0, 1.0)
-				xywh2 = cv2.RotatedRect(center, img_plane_rotated_size, -45.0).boundingRect()
-				tmp_rot = cv2.warpAffine(tmp_gradient, rot, bbox_size(xywh2))
-				start_x, start_y = max(0, (xywh[-2] - img_width) / 2), max(0, (xywh[-1] - img_height) / 2)
-				tmp_gradient = tmp_rot(Rect(start_x, start_y, img_width, img_height))
-				img_gaussians.extend(cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV])
-		range_1 = 256.0
+				tmp_rot = cv2.warpAffine(tmp_gradient, rot, xywh2_size)[start_y : start_y + img_height, start_x : start_x : img_width]
+				img_gaussians.extend(cv2.threshold(tmp_rot, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV])
+		
 		for i in range(img_channels * 8):
 			hmin, hmax = img_gaussians[i].min(), img_gaussians[i].max()
 			img_gaussians[i] = img_gaussians[i].convertTo(tmp, cv2.CV_8U, (range_1 - 1) / (hmax - hmin), -(range_1 - 1) * hmin / (hmax - hmin))
-		totals = np.zeros((nb_segs,), dtype = np.int32) 
+
 		for x in range(regions.total):
 			for p in range(img_channels):
 				for i in range(8):
