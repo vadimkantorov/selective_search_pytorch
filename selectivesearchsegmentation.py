@@ -169,7 +169,7 @@ class HandcraftedRegionFeatures:
 
 			center = (img_width / 2.0, img_height / 2.0)
 			rot = cv2.getRotationMatrix2D(center, 45.0, 1.0)
-			bbox = cv2.RotatedRect(center, img.size(), 45.0).boundingRect()
+			bbox = cv2.RotatedRect(center, self.img_area, 45.0).boundingRect()
 			rot[0, 2] += bbox.width/2.0 - center[0]
 			rot[1, 2] += bbox.height/2.0 - center[1]
 			img_plane_rotated = cv2.warpAffine(img_planes[p], rot, bbox.size())
