@@ -31,17 +31,15 @@ class RegionSimilarity:
 	def __call__(self, r1, r2):
 		return sum(self.weights[i] * s(features, r1, r2) for i, s in enumerate(self.strategies)) / sum(self.weights)
 
-
 def selectiveSearch(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
-	hsv, lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2Lab)
+	hsv, lab, gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2Lab), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 	
 	if fast:
 		segmentations = [ cv.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 2, inc_k) ]
 		images = [hsv, lab]
 	else:
-		I = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 		segmentations = [ cv.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 4, inc_k) ]
-		images = [hsv, lab, I, hsv[..., 0], np.dstack([R, G, I])]
+		images = [hsv, lab, gray, hsv[..., 0], np.dstack([img_bgr[..., 2], img_bgr[..., 1], I])]
 	
 	
 	all_regions = []
@@ -151,56 +149,35 @@ class HandcraftedRegionFeatures:
 				points[regions[i, j]].append( (j, i) )
 		self.bounding_rects = list(map(cv2.boundingRect, points))
 
-		self.texture_histogram_size = texture_histogram_bins_size * img_channels * 8
-		self.texture_histograms = np.zeros((nb_segs, self.texture_histogram_size), dtype = np.float32)
-
+		self.texture_histograms = np.zeros((nb_segs, texture_histogram_bins_size * img_channels * 8), dtype = np.float32)
 		img_gaussians = []
-
 		for p in range(img_channels):
 			img_plane = img[..., p]
-			# X, no rot
-			tmp_gradient = cv2.Scharr(img_plane, cv2.CV_32F, 1, 0)
-			img_gaussians.extend([cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV]])
-			
-			# Y, no rot
-			tmp_gradient = cv2.Scharr(img_plane, cv2.CV_32F, 0, 1)
-			img_gaussians.extend([cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV]])
-
 			center = (img_width / 2.0, img_height / 2.0)
 			rot = cv2.getRotationMatrix2D(center, 45.0, 1.0)
-			bbox = cv2.RotatedRect(center, self.img_area, 45.0).boundingRect()
-			rot[0, 2] += bbox.width/2.0 - center[0]
-			rot[1, 2] += bbox.height/2.0 - center[1]
-			img_plane_rotated = cv2.warpAffine(img_plane, rot, bbox_size(bbox))
+			xywh = cv2.RotatedRect(center, self.img_area, 45.0).boundingRect()
+			rot[0, 2] += xywh[-2] / 2.0 - center[0]
+			rot[1, 2] += xywh[-1] / 2.0 - center[1]
+			img_plane_rotated = cv2.warpAffine(img_plane, rot, bbox_size(xywh))
 			img_plane_rotated_size = img_plane_rotated.shape[0] * img_plane_rotated.shape[1]
-
-			# X, rot
-			tmp_gradient = cv2.Scharr(img_plane_rotated, cv2.CV_32F, 1, 0)
-			center = (int(img_plane_rotated.shape[1] / 2.0), int(img_plane_rotated.shape[0] / 2.0))
-			rot = cv2.getRotationMatrix2D(center, -45.0, 1.0)
-			bbox2 = cv2.RotatedRect(center, img_plane_rotated_size, -45.0).boundingRect()
-			tmp_rot = cv2.warpAffine(tmp_gradient, rot, bbox_size(bbox2))
-
-			start_x, start_y = max(0, (bbox.width - img_width) / 2), max(0, (bbox.height - img_height) / 2)
-			tmp_gradient = tmp_rot(Rect(start_x, start_y, img_width, img_height))
-			img_gaussians.extend([cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV]])
-
-			# Y, rot
-			tmp_gradient = cv2.Scharr(img_plane_rotated, cv2.CV_32F, 0, 1)
-			center = (int(img_plane_rotated.shape[1] / 2.0), int(img_plane_rotated.shape[0] / 2.0))
-			rot = cv2.getRotationMatrix2D(center, -45.0, 1.0)
-			bbox2 = cv2.RotatedRect(center, img_plane_rotated_size, -45.0).boundingRect()
-			tmp_rot = cv2.warpAffine(tmp_gradient, rot, bbox_size(bbox2))
-
-			start_x, start_y = max(0, (bbox.width - img_width) / 2), max(0, (bbox.height - img_height) / 2)
-			tmp_gradient = tmp_rot(Rect(start_x, start_y, img_width, img_height))
-			img_gaussians.extend([cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV]])
-		
+			for gr in [(1, 0), (0, 1)]:
+				# X/Y no rot
+				tmp_gradient = cv2.Scharr(img_plane, cv2.CV_32F, *gr)
+				img_gaussians.extend(cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV])
+			for gr in [(1, 0), (0, 1)]:
+				# X/Y, rot
+				tmp_gradient = cv2.Scharr(img_plane_rotated, cv2.CV_32F, *gr)
+				center = (int(img_plane_rotated.shape[1] / 2.0), int(img_plane_rotated.shape[0] / 2.0))
+				rot = cv2.getRotationMatrix2D(center, -45.0, 1.0)
+				xywh2 = cv2.RotatedRect(center, img_plane_rotated_size, -45.0).boundingRect()
+				tmp_rot = cv2.warpAffine(tmp_gradient, rot, bbox_size(xywh2))
+				start_x, start_y = max(0, (xywh[-2] - img_width) / 2), max(0, (xywh[-1] - img_height) / 2)
+				tmp_gradient = tmp_rot(Rect(start_x, start_y, img_width, img_height))
+				img_gaussians.extend(cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV])
 		range_1 = 256.0
 		for i in range(img_channels * 8):
 			hmin, hmax = img_gaussians[i].min(), img_gaussians[i].max()
 			img_gaussians[i] = img_gaussians[i].convertTo(tmp, cv2.CV_8U, (range_1 - 1) / (hmax - hmin), -(range_1 - 1) * hmin / (hmax - hmin))
-		
 		totals = np.zeros((nb_segs,), dtype = np.int32) 
 		for x in range(regions.total):
 			for p in range(img_channels):
@@ -217,12 +194,11 @@ class HandcraftedRegionFeatures:
 		self.texture_histograms[r1] = self.texture_histograms[r2] = (self.texture_histograms[r1] * self.region_areas[r1] + self.texture_histograms[r2] * self.region_areas[r2]) / (self.region_areas[r1] + self.region_areas[r2]) 
 		self.bounding_rects[r1] = self.bounding_rects[r2] = bbox_merge(self.bounding_rects[r1], self.bounding_rects[r2])
 
-
 	def Size(self, r1, r2):
-		return max(min(1.0 - float(self.region_areas[r1] + self.region_areas[r2]) / float(self.img_area), 1.0), 0.0)
+		return max(0.0, min(1.0, 1.0 - float(self.region_areas[r1] + self.region_areas[r2]) / float(self.img_area)))
 	
 	def Fill(self, r1, r2):
-		return max(min(1.0 - float(  bbox_merge(self.bounding_rects[r1], self.bounding_rects[r2]).area() - self.region_areas[r1] - self.region_areas[r2]) / float(self.img_area), 1.0), 0.0)
+		return max(0.0, min(1.0, 1.0 - float(  bbox_merge(self.bounding_rects[r1], self.bounding_rects[r2]).area() - self.region_areas[r1] - self.region_areas[r2]) / float(self.img_area)))
 	
 	def Color(self, r1, r2):
 		return np.sum(np.minimum(self.color_histograms[r1], self.color_histograms[r2]))
