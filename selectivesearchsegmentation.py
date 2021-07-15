@@ -148,8 +148,7 @@ class HandcraftedRegionFeatures:
 				points[regions[i, j]].append( (j, i) )
 		self.bounding_rects = list(map(cv2.boundingRect, points))
 
-		self.texture_histogram_bins_size = texture_histogram_bins_size
-		self.texture_histogram_size = self.texture_histogram_bins_size * img_channels * 8
+		self.texture_histogram_size = texture_histogram_bins_size * img_channels * 8
 		self.texture_histograms = np.zeros((nb_segs, self.texture_histogram_size), dtype = np.float32)
 
 		img_gaussians = []
@@ -214,22 +213,22 @@ class HandcraftedRegionFeatures:
 
 
 	def merge(self, r1, r2):
-		self.color_histograms[r1] = self.color_histograms[r2] = [ (self.color_histograms[r1][i] * self.region_areas[r1] + self.color_histograms[r2][i] * self.region_areas[r2]) / (self.region_areas[r1] + self.region_areas[r2]) for i in range(self.color_histogram_size) ]
-		self.texture_histograms[r1] = self.texture_histograms[r2] = [ (self.texture_histograms[r1][i] * self.region_areas[r1] + self.texture_histograms[r2][i] * self.region_areas[r2]) / (self.region_areas[r1] + self.region_areas[r2]) for i in range(self.texture_histogram_size) ]
+		self.color_histograms[r1] = self.color_histograms[r2] = (self.color_histograms[r1] * self.region_areas[r1] + self.color_histograms[r2] * self.region_areas[r2]) / (self.region_areas[r1] + self.region_areas[r2]) 
+		self.texture_histograms[r1] = self.texture_histograms[r2] = (self.texture_histograms[r1] * self.region_areas[r1] + self.texture_histograms[r2] * self.region_areas[r2]) / (self.region_areas[r1] + self.region_areas[r2]) 
 		self.bounding_rects[r1] = self.bounding_rects[r2] = bbox_merge(self.bounding_rects[r1], self.bounding_rects[r2])
 
 
 	def Size(self, r1, r2):
 		return max(min(1.0 - float(self.region_areas[r1] + self.region_areas[r2]) / float(self.img_area), 1.0), 0.0)
 	
-	def Color(self, r1, r2):
-		return sum(min(self.color_histograms[r1][i], self.color_histograms[r2][i]) for i in range(self.color_histogram_size))
-
 	def Fill(self, r1, r2):
 		return max(min(1.0 - float(  bbox_merge(self.bounding_rects[r1], self.bounding_rects[r2]).area() - self.region_areas[r1] - self.region_areas[r2]) / float(self.img_area), 1.0), 0.0)
+	
+	def Color(self, r1, r2):
+		return np.sum(np.minimum(self.color_histograms[r1], self.color_histograms[r2]))
 
 	def Texture(self, r1, r2):
-		return sum(min(self.texture_histograms[r1][i], self.texture_histograms[r2][i]) for i in range(self.texture_histogram_size))
+		return np.sum(np.minimum(self.texture_histograms[r1], self.texture_histograms[r2]))
 
 if __name__ == '__main__':
 	base_image = cv2.imread(sys.argv[1])
