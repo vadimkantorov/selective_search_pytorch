@@ -1,4 +1,4 @@
-import sys
+import argparse
 import random
 import dataclasses
 import copy
@@ -115,9 +115,8 @@ def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects)
 
 		local_neighbours = set()
 		for similarity in similarities:
-			if similarity.from == p.from or similarity.to == p.from or similarity.from == p.to or similarity.to == p.to:
-				from = similarity.to if similarity.from == p.from or similarity.from == p.to else similarity.from
-				local_neighbours.add(from)
+			if p.from in [similarity.from, similarity.to] or p.to in [similarity.from, similarity.to]:
+				local_neighbours.add(similarity.to if similarity.from == p.from or similarity.from == p.to else similarity.from)
 				similarity.removed = True
 
 		similarities = [sim for sim in similarities if not sim.removed]
@@ -209,4 +208,17 @@ class HandcraftedRegionFeatures:
 		return np.sum(np.minimum(self.texture_histograms[r1], self.texture_histograms[r2]))
 
 if __name__ == '__main__':
-	print(selectiveSearch(cv2.imread(sys.argv[1])))
+	parser = argparse.ArgumentParser()
+	parser.add_argument('--input-path', '-i')
+	parser.add_argument('--output-path', '-o')
+	parser.add_argument('--topk', type = int, default = 30)
+	arg = parser.parse_args()
+
+	img = cv2.imread(args.input_path)
+
+	boxes = selectiveSearch(img)
+
+	for x, y, w, h in regions[:args.topk]:
+		cv2.rectangle(img, (x, y), (x + w, y + h), (0, 0, 255), 5)
+	
+	cv2.imwrite(args.output_path, img)
