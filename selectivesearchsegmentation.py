@@ -71,7 +71,7 @@ def selectiveSearch(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 
 
 				previous_p = p
 
-			bounding_rects = [cv2.boundingRect(points[seg]) for seg in range(nb_segs)]
+			bounding_rects = list(map(cv2.boundingRect, points))
 			
 			features = HandcraftedRegionFeatures(image, img_regions, region_areas)
 			
@@ -136,8 +136,8 @@ class HandcraftedRegionFeatures:
 		
 		self.region_areas = region_areas
 		self.img_area = img_height * img_width
+		
 		self.color_histograms = np.zeros((nb_segs, img_channels, color_histogram_bins_size))
-
 		for r in range(nb_segs):
 			self.color_histograms[r] = cv2.calcHist(img, nimages = 1, channels = list(range(img_channels)), mask = regions == r, dims = 1, histSize = [self.color_histogram_bins_size] * img_channels, ranges = [0, 256])
 		self.color_histograms /= np.sum(self.color_histograms, axis = (1, 2))
@@ -210,16 +210,12 @@ class HandcraftedRegionFeatures:
 					bin = int(float(val) / (range_1 / self.texture_histogram_bins_size))
 					self.texture_histograms[regions[x], (p * 8 + i) * self.texture_histogram_bins_size + bin] += 1
 					totals[regions[x]] += 1
-
 		self.texture_histograms /= totals[:, None]
 
-	
 
 	def merge(self, r1, r2):
-		self.color_histograms[r1] = self.color_histograms[r2] = [ (h1[i] * self.region_areas[r1] + h2[i] * self.region_areas[r2]) / (self.region_areas[r1] + self.region_areas[r2]) for i in range(histogram_size) ]
-		
-		self.texture_histograms[r1] = self.texture_histograms[r2] = [ (self.texture_histograms[r1][i] * self.region_areas[r1] + self.texture_histograms[r2][i] * self.region_areas[r2]) / (self.region_areas[r1] + size_r2) for i in range(self.texture_histogram_size) ]
-		
+		self.color_histograms[r1] = self.color_histograms[r2] = [ (self.color_histograms[r1][i] * self.region_areas[r1] + self.color_histograms[r2][i] * self.region_areas[r2]) / (self.region_areas[r1] + self.region_areas[r2]) for i in range(self.color_histogram_size) ]
+		self.texture_histograms[r1] = self.texture_histograms[r2] = [ (self.texture_histograms[r1][i] * self.region_areas[r1] + self.texture_histograms[r2][i] * self.region_areas[r2]) / (self.region_areas[r1] + self.region_areas[r2]) for i in range(self.texture_histogram_size) ]
 		self.bounding_rects[r1] = self.bounding_rects[r2] = bbox_merge(self.bounding_rects[r1], self.bounding_rects[r2])
 
 
