@@ -29,13 +29,20 @@ class RegionSimilarity:
 		self.weights = [1.0 / len(strategies)] * len(strategies)
 
 	def __call__(self, r1, r2):
-		return sum(self.weights[i] * s(r1, r2) for i, s in enumerate(self.strategies)) / sum(self.weights)
+		return sum(self.weights[i] * s(features, r1, r2) for i, s in enumerate(self.strategies)) / sum(self.weights)
 
 
-def selectiveSearchFast(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100):
-	segmentations = [ cv.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 2, inc_k) ]
+def selectiveSearch(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
+	hsv, lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2Lab)
 	
-	images = [ cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2Lab) ]
+	if fast:
+		segmentations = [ cv.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 2, inc_k) ]
+		images = [hsv, lab]
+	else:
+		I = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+		segmentations = [ cv.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 4, inc_k) ]
+		images = [hsv, lab, I, hsv[..., 0], np.dstack([R, G, I])]
+	
 	
 	all_regions = []
 
@@ -66,10 +73,12 @@ def selectiveSearchFast(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_siz
 
 			bounding_rects = [cv2.boundingRect(points[seg]) for seg in range(nb_segs)]
 			
-			features1 = HandcraftedRegionFeatures(image, img_regions, region_areas)
-			features2 = copy.deepcopy(features1)
+			features = HandcraftedRegionFeatures(image, img_regions, region_areas)
 			
-			strategies = [RegionSimilarity(features1, [features1.Fill, features1.Texture, features1.Size, features1.Color]), RegionSimilarity(features2, [features2.Fill, features2.Texture, features2.Size])]
+			if fast:
+				strategies = [RegionSimilarity(features, [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size])]
+			else:
+				strategies = [RegionSimilarity(features, [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Size] ) ]
 			
 			all_regions.extend( region for strategy in strategies for region in hierarchicalGrouping(strategy, is_neighbour, region_areas, nb_segs, bounding_rects) )
 			
@@ -80,7 +89,6 @@ def bbox_merge(xywh1, xywh2):
 	points1, points2 = map(lambda xywh: [(xywh[0], xywh[1]), (xywh[0] + xywh[-2], xywh[1]), (xywh[0], xywh[1] + xywh[-1]), (xywh[0] + xywh[-2], xywh[1] + xywh[-1])], [xywh1, xywh2])
 	return cv2.minAreaRect(points1 + points2)
 
-
 def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects):
 	region_areas = region_areas.copy()
 	regions, similarities = [], []
@@ -88,8 +96,8 @@ def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects)
 	for i in range(nb_segs):
 		regions.append(Region(id = i, level = i, merged_to = -1, bounding_box = bounding_rects[i]))
 		for j in range(i + 1, nb_segs):
-		if is_neighbour[i, j]:
-			similarities.append(Neighbour(from = i, to = j, similarity = s(i, j), removed = False))
+			if is_neighbour[i, j]:
+				similarities.append(Neighbour(from = i, to = j, similarity = s(i, j), removed = False))
 
 	while len(similarities) > 0:
 		similarities.sort()
@@ -104,12 +112,11 @@ def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects)
 		region_areas[region_from.id] += region_areas[region_to.id]
 		region_areas[region_to.id] = region_areas[region_from.id]
 
-		local_neighbours = []
+		local_neighbours = set()
 		for similarity in similarities:
 			if similarity.from == p.from or similarity.to == p.from or similarity.from == p.to or similarity.to == p.to:
 				from = similarity.to if similarity.from == p.from or similarity.from == p.to else similarity.from
-				if from not in local_neighbours:
-					local_neighbours.append(from)
+				local_neighbours.add(from)
 				similarity.removed = True
 
 		similarities = [sim for sim in similarities if not sim.removed]
