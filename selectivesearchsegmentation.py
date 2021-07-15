@@ -87,7 +87,7 @@ def bbox_merge(xywh1, xywh2):
 	points1, points2 = map(lambda xywh: [(xywh[0], xywh[1]), (xywh[0] + xywh[-2], xywh[1]), (xywh[0], xywh[1] + xywh[-1]), (xywh[0] + xywh[-2], xywh[1] + xywh[-1])], [xywh1, xywh2])
 	return cv2.boundingRect(points1 + points2)
 
-def bbox_size(xywh):
+def bbox_wh(xywh):
 	return (xywh[-2], xywh[-1])
 
 def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects):
@@ -100,7 +100,7 @@ def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects)
 			if is_neighbour[i, j]:
 				similarities.append(Neighbour(from = i, to = j, similarity = s(i, j), removed = False))
 
-	while len(similarities) > 0:
+	while similarities:
 		similarities.sort()
 		p = similarities.pop()
 
@@ -160,12 +160,12 @@ class HandcraftedRegionFeatures:
 			xywh = cv2.RotatedRect(center, self.img_area, 45.0).boundingRect()
 			rot[0, 2] += xywh[-2] / 2.0 - center[0]
 			rot[1, 2] += xywh[-1] / 2.0 - center[1]
-			img_plane_rotated = cv2.warpAffine(img_plane, rot, bbox_size(xywh))
+			img_plane_rotated = cv2.warpAffine(img_plane, rot, bbox_wh(xywh))
 			img_plane_rotated_size = img_plane_rotated.shape[0] * img_plane_rotated.shape[1]
 			
 			center = (int(img_plane_rotated.shape[1] / 2.0), int(img_plane_rotated.shape[0] / 2.0))
 			rot = cv2.getRotationMatrix2D(center, -45.0, 1.0)
-			xywh2_size = bbox_size(cv2.RotatedRect(center, img_plane_rotated_size, -45.0).boundingRect())
+			xywh2_size = bbox_wh(cv2.RotatedRect(center, img_plane_rotated_size, -45.0).boundingRect())
 			start_x, start_y = max(0, (xywh[-2] - img_width) / 2), max(0, (xywh[-1] - img_height) / 2)
 
 			for gr in [(1, 0), (0, 1)]:
@@ -177,9 +177,9 @@ class HandcraftedRegionFeatures:
 				tmp_rot = cv2.warpAffine(tmp_gradient, rot, xywh2_size)[start_y : start_y + img_height, start_x : start_x : img_width]
 				img_gaussians.extend(cv2.threshold(tmp_rot, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV])
 		
-		for i in range(img_channels * 8):
-			hmin, hmax = img_gaussians[i].min(), img_gaussians[i].max()
-			img_gaussians[i] = img_gaussians[i].convertTo(tmp, cv2.CV_8U, (range_1 - 1) / (hmax - hmin), -(range_1 - 1) * hmin / (hmax - hmin))
+		for i, img_plane in enumerate(img_gaussians):
+			hmin, hmax = img_plane.min(), img_plane.max()
+			img_gaussians[i] = (255 * (img_plane - hmin) / (hmax - hmin)).astype(np.uint8)
 
 		for x in range(regions.total):
 			for p in range(img_channels):
