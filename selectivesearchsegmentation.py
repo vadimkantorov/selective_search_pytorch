@@ -127,7 +127,7 @@ class HandcraftedRegionFeatures:
 	def __init__(img, regions, sizes, color_histogram_bins_size = 25, texture_histogram_bins_size = 10):
 		img_channels = img.shape[-1]
 		img_planes = [img[..., p] for p in range(img_channels)]
-		img_height, img_width = img.shape[0], img.shape[1]
+		img_height, img_width = img.shape[:2]
 		
 		nb_segs = int(regions.max()) + 1
 		
@@ -146,13 +146,12 @@ class HandcraftedRegionFeatures:
 		for i in range(regions.shape[0]):
 			for j in range(regions.shape[1]): 
 				points[regions[i, j]].append( (j, i) )
-		self.bounding_rects = [cv2.boundingRect(points[seg]) for seg in range(nb_seg)]
+		self.bounding_rects = list(map(cv2.boundingRect, points))
 
 		range_1 = 256.0
 		self.texture_histogram_bins_size = texture_histogram_bins_size
 		self.texture_histogram_size = self.texture_histogram_bins_size * img_channels * 8
-
-		self.texture_histograms = np.zeros((nb_segs, self.texture_histogram_size))
+		self.texture_histograms = np.zeros((nb_segs, self.texture_histogram_size), dtype = np.float32)
 
 		img_gaussians = []
 
@@ -203,19 +202,15 @@ class HandcraftedRegionFeatures:
 			img_gaussians[i] = img_gaussians[i].convertTo(tmp, cv2.CV_8U, (range_1 - 1) / (hmax - hmin), -(range_1 - 1) * hmin / (hmax - hmin))
 		
 		totals = np.zeros((nb_segs,), dtype = np.int32) 
-
 		for x in range(regions.total):
 			for p in range(img_channels):
 				for i in range(8):
-					region = regions[x]
 					val = int(img_gaussians[p * 8 + i][x])
 					bin = int(float(val) / (range_1 / self.texture_histogram_bins_size))
-					self.texture_histograms[region][(p * 8 + i) * self.texture_histogram_bins_size + bin] += 1
-					totals[region] += 1
+					self.texture_histograms[regions[x], (p * 8 + i) * self.texture_histogram_bins_size + bin] += 1
+					totals[regions[x]] += 1
 
-		for r in range(nb_segs):
-			for h_pos2 in range(self.texture_histogram_size):
-				self.texture_histograms[r][h_pos2] = float(self.texutre_histograms[r][h_pos2]) / float(totals[r])
+		self.texture_histograms /= totals[:, None]
 
 	def merge(self, r1, r2):
 		self.color_histograms[r1] = self.color_histograms[r2] = [ (h1[i] * self.sizes[r1] + h2[i] * self.sizes[r2]) / (self.sizes[r1] + self.sizes[r2]) for i in range(histogram_size) ]
