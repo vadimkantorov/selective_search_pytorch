@@ -87,7 +87,10 @@ def selectiveSearch(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 
 
 def bbox_merge(xywh1, xywh2):
 	points1, points2 = map(lambda xywh: [(xywh[0], xywh[1]), (xywh[0] + xywh[-2], xywh[1]), (xywh[0], xywh[1] + xywh[-1]), (xywh[0] + xywh[-2], xywh[1] + xywh[-1])], [xywh1, xywh2])
-	return cv2.minAreaRect(points1 + points2)
+	return cv2.boundingRect(points1 + points2)
+
+def bbox_size(xywh):
+	return xywh[-2] * xywh[-1]
 
 def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects):
 	region_areas = region_areas.copy()
@@ -157,44 +160,41 @@ class HandcraftedRegionFeatures:
 			img_plane = img[..., p]
 			# X, no rot
 			tmp_gradient = cv2.Scharr(img_plane, cv2.CV_32F, 1, 0)
-			tmp_gradient_pos, tmp_gradient_neg = [cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV]]
-			img_gaussians.extend([tmp_gradient_pos.clone(), tmp_gradient_neg.clone()])
+			img_gaussians.extend([cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV]])
 			
 			# Y, no rot
 			tmp_gradient = cv2.Scharr(img_plane, cv2.CV_32F, 0, 1)
-			tmp_gradient_pos, tmp_gradient_neg = [cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV]]
-			img_gaussians.extend([tmp_gradient_pos.clone(), tmp_gradient_neg.clone()])
+			img_gaussians.extend([cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV]])
 
 			center = (img_width / 2.0, img_height / 2.0)
 			rot = cv2.getRotationMatrix2D(center, 45.0, 1.0)
 			bbox = cv2.RotatedRect(center, self.img_area, 45.0).boundingRect()
 			rot[0, 2] += bbox.width/2.0 - center[0]
 			rot[1, 2] += bbox.height/2.0 - center[1]
-			img_plane_rotated = cv2.warpAffine(img_plane, rot, bbox.size())
+			img_plane_rotated = cv2.warpAffine(img_plane, rot, bbox_size(bbox))
+			img_plane_rotated_size = img_plane_rotated.shape[0] * img_plane_rotated.shape[1]
 
 			# X, rot
 			tmp_gradient = cv2.Scharr(img_plane_rotated, cv2.CV_32F, 1, 0)
 			center = (int(img_plane_rotated.shape[1] / 2.0), int(img_plane_rotated.shape[0] / 2.0))
 			rot = cv2.getRotationMatrix2D(center, -45.0, 1.0)
-			bbox2 = cv2.RotatedRect(center, img_plane_rotated.size(), -45.0).boundingRect()
-			tmp_rot = cv2.warpAffine(tmp_gradient, rot, bbox2.size())
+			bbox2 = cv2.RotatedRect(center, img_plane_rotated_size, -45.0).boundingRect()
+			tmp_rot = cv2.warpAffine(tmp_gradient, rot, bbox_size(bbox2))
 
 			start_x, start_y = max(0, (bbox.width - img_width) / 2), max(0, (bbox.height - img_height) / 2)
 			tmp_gradient = tmp_rot(Rect(start_x, start_y, img_width, img_height))
-			tmp_gradient_pos, tmp_gradient_neg = [cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV]]
-			img_gaussians.extend([tmp_gradient_pos.clone(), tmp_gradient_neg.clone()])
+			img_gaussians.extend([cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV]])
 
-			// Y, rot
+			# Y, rot
 			tmp_gradient = cv2.Scharr(img_plane_rotated, cv2.CV_32F, 0, 1)
 			center = (int(img_plane_rotated.shape[1] / 2.0), int(img_plane_rotated.shape[0] / 2.0))
 			rot = cv2.getRotationMatrix2D(center, -45.0, 1.0)
-			bbox2 = cv2.RotatedRect(center, img_plane_rotated.size(), -45.0).boundingRect()
-			tmp_rot = cv2.warpAffine(tmp_gradient, rot, bbox2.size())
+			bbox2 = cv2.RotatedRect(center, img_plane_rotated_size, -45.0).boundingRect()
+			tmp_rot = cv2.warpAffine(tmp_gradient, rot, bbox_size(bbox2))
 
 			start_x, start_y = max(0, (bbox.width - img_width) / 2), max(0, (bbox.height - img_height) / 2)
 			tmp_gradient = tmp_rot(Rect(start_x, start_y, img_width, img_height))
-			tmp_gradient_pos, tmp_gradient_neg = [cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV]]
-			img_gaussians.extend([tmp_gradient_pos.clone(), tmp_gradient_neg.clone()])
+			img_gaussians.extend([cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV]])
 		
 		range_1 = 256.0
 		for i in range(img_channels * 8):
@@ -231,6 +231,4 @@ class HandcraftedRegionFeatures:
 		return np.sum(np.minimum(self.texture_histograms[r1], self.texture_histograms[r2]))
 
 if __name__ == '__main__':
-	base_image = cv2.imread(sys.argv[1])
-	regions = selectiveSearchFast(base_image)
-	print(regions)
+	print(selectiveSearch(cv2.imread(sys.argv[1])))
