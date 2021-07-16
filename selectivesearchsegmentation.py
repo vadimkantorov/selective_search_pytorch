@@ -112,7 +112,7 @@ def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects)
         regions.append(Region(id = min(region_fro.id, region_to.id), level = 1 + max(region_fro.level, region_to.level), merged_to = -1, bounding_box = bbox_merge(region_fro.bounding_box, region_to.bounding_box), rank = 0))
         regions[p.fro].merged_to = regions[p.to].merged_to = len(regions) - 1
 
-        s.merge(region_fro.id, region_to.id);
+        s.merge(region_fro.id, region_to.id)
         region_areas[region_to.id] = region_areas[region_fro.id] = region_areas[region_fro.id] + region_areas[region_to.id]
 
         local_neighbours = set()
