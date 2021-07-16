@@ -99,7 +99,7 @@ def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects)
     regions, similarities = [], []
 
     for i in range(nb_segs):
-        regions.append(Region(id = i, level = i, merged_to = -1, bounding_box = bounding_rects[i], rank = 0))
+        regions.append(Region(id = i, level = 1, merged_to = -1, bounding_box = bounding_rects[i], rank = 0))
         for j in range(i + 1, nb_segs):
             if is_neighbour[i, j]:
                 similarities.append(Neighbour(fro = i, to = j, similarity = s(i, j), removed = False))
@@ -109,13 +109,11 @@ def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects)
         p = similarities.pop()
 
         region_fro, region_to = regions[p.fro], regions[p.to]
-        regions.append(Region(id = min(region_fro.id, region_to.id), level = max(region_fro.level, region_to.level) + 1, merged_to = -1, bounding_box = bbox_merge(region_fro.bounding_box, region_to.bounding_box), rank = 0))
+        regions.append(Region(id = min(region_fro.id, region_to.id), level = 1 + max(region_fro.level, region_to.level), merged_to = -1, bounding_box = bbox_merge(region_fro.bounding_box, region_to.bounding_box), rank = 0))
         regions[p.fro].merged_to = regions[p.to].merged_to = len(regions) - 1
 
         s.merge(region_fro.id, region_to.id);
-
-        region_areas[region_fro.id] += region_areas[region_to.id]
-        region_areas[region_to.id] = region_areas[region_fro.id]
+        region_areas[region_to.id] = region_areas[region_fro.id] = region_areas[region_fro.id] + region_areas[region_to.id]
 
         local_neighbours = set()
         for similarity in similarities:
