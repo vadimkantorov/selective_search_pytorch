@@ -53,10 +53,11 @@ def selectiveSearch(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 
             is_neighbour = np.zeros((nb_segs, nb_segs), dtype = bool)
             region_areas = np.zeros((nb_segs,), dtype = np.int64)
 
-            previous_p = None
             
             points = [[] for i in range(nb_segs)]
 
+            previous_p = None
+            
             for i in range(img_regions.shape[0]):
                 for j in range(img_regions.shape[1]): 
                     p = img_regions[i]
