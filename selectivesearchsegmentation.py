@@ -33,8 +33,8 @@ class RegionSimilarity:
         return sum(self.weights[i] * s(self.features, r1, r2) for i, s in enumerate(self.strategies)) / sum(self.weights)
 
 def bbox_merge(xywh1, xywh2):
-    points1, points2 = map(lambda xywh: [(xywh[0], xywh[1]), (xywh[0] + xywh[-2], xywh[1]), (xywh[0], xywh[1] + xywh[-1]), (xywh[0] + xywh[-2], xywh[1] + xywh[-1])], [xywh1, xywh2])
-    return cv2.boundingRect(np.array(points1 + points2))
+    boxPoints = lambda x, y, w, h: [(x, y), (x + w, y), (x, y + h), (x + w, y + h)]
+    return cv2.boundingRect(np.array(boxPoints(*xywh1) + boxPoints(*xywh2)))
 
 def bbox_wh(xywh):
     return (xywh[-2], xywh[-1])
