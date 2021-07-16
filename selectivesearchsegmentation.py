@@ -32,6 +32,16 @@ class RegionSimilarity:
     def __call__(self, r1, r2):
         return sum(self.weights[i] * s(self.features, r1, r2) for i, s in enumerate(self.strategies)) / sum(self.weights)
 
+def bbox_merge(xywh1, xywh2):
+    points1, points2 = map(lambda xywh: [(xywh[0], xywh[1]), (xywh[0] + xywh[-2], xywh[1]), (xywh[0], xywh[1] + xywh[-1]), (xywh[0] + xywh[-2], xywh[1] + xywh[-1])], [xywh1, xywh2])
+    return cv2.boundingRect(np.array(points1 + points2))
+
+def bbox_wh(xywh):
+    return (xywh[-2], xywh[-1])
+
+def bbox_area(xywh):
+    return xywh[-2] * xywh[-1]
+
 def selectiveSearch(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
     hsv, lab, gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2Lab), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     
@@ -85,17 +95,7 @@ def selectiveSearch(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 
     
     return list({region.bounding_box : True for region in sorted(all_regions, key = lambda r: r.bounding_box)}.keys())
 
-def bbox_merge(xywh1, xywh2):
-    points1, points2 = map(lambda xywh: [(xywh[0], xywh[1]), (xywh[0] + xywh[-2], xywh[1]), (xywh[0], xywh[1] + xywh[-1]), (xywh[0] + xywh[-2], xywh[1] + xywh[-1])], [xywh1, xywh2])
-    return cv2.boundingRect(np.array(points1 + points2))
-
-def bbox_wh(xywh):
-    return (xywh[-2], xywh[-1])
-
-def bbox_area(xywh):
-    return xywh[-2] * xywh[-1]
-
-def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects):
+def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects, compute_rank = lambda region: random.random() * region.level):
     region_areas = region_areas.copy()
     regions, similarities = [], []
 
@@ -118,7 +118,8 @@ def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects)
 
         local_neighbours = set()
         for similarity in similarities:
-            if p.fro in [similarity.fro, similarity.to] or p.to in [similarity.fro, similarity.to]:
+            tofro = [similarity.fro, similarity.to]
+            if p.fro in tofro or p.to in tofro:
                 local_neighbours.add(similarity.to if similarity.fro == p.fro or similarity.fro == p.to else similarity.fro)
                 similarity.removed = True
 
@@ -128,7 +129,7 @@ def hierarchicalGrouping(s, is_neighbour, region_areas, nb_segs, bounding_rects)
             similarities.append(Neighbour(fro = len(regions) - 1, to = local_neighbour, similarity = s(regions[len(regions) - 1].id, regions[local_neighbour].id), removed = False))
 
     for region in regions:
-        region.rank = random.random() * region.level
+        region.rank = compute_rank(region)
 
     return regions
 
