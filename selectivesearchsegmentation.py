@@ -6,6 +6,7 @@ import copy
 import numpy as np
 import cv2
 import cv2.ximgproc.segmentation
+import torch
 
 @dataclasses.dataclass(order = True)
 class RegionNode:
@@ -28,7 +29,7 @@ def RegionSimilarity(features, strategies):
 def bbox_wh(xywh):
     return (xywh[-2], xywh[-1])
 
-def bbox_area(xywh):
+def bbox_size(xywh):
     return xywh[-2] * xywh[-1]
 
 def bbox_merge(xywh1, xywh2):
@@ -49,6 +50,7 @@ def selective_search(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size =
             
     all_regs = []
     for img in images:
+        for gs in segmentations:
             reg_lab = gs.processImage(img)
             nb_segs = 1 + int(reg_lab.max())
 
@@ -62,16 +64,16 @@ def selective_search(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size =
                         graph_adj[pr[j - 1], p[j]] = graph_adj[p[j], pr[j - 1]] = True
 
             features = HandcraftedRegionFeatures(img, reg_lab, nb_segs)
-            all_regs.extend(reg for strategy in strategies(features) for reg in hierarchical_grouping(strategy, graph_adj))
+            all_regs.extend(reg for strategy in strategies(features) for reg in hierarchical_grouping(strategy, graph_adj, features.xyxy))
     
     return list({region.bbox : True for reg in sorted(all_regs, key = lambda r: r.rank)}.keys())
 
-def hierarchical_grouping(strategy, graph_adj, compute_rank = lambda region: region.level * random.random()):
+def hierarchical_grouping(strategy, graph_adj, bbox, compute_rank = lambda region: region.level * random.random()):
     regs, PQ = [], []
 
-    for i in range(len(bounding_rects)):
-        regs.append(RegionNode(id = i, level = 1, merged_to = -1, bbox = bounding_rects[i], rank = 0))
-        for j in range(i + 1, len(bounding_rects)):
+    for i in range(len(bbox)):
+        regs.append(RegionNode(id = i, level = 1, merged_to = -1, bbox = bbox[i], rank = 0))
+        for j in range(i + 1, len(bbox)):
             if graph_adj[i, j]:
                 PQ.append(Edge(fro = i, to = j, similarity = strategy(i, j), removed = False))
     
@@ -102,20 +104,35 @@ def hierarchical_grouping(strategy, graph_adj, compute_rank = lambda region: reg
 
 class HandcraftedRegionFeatures:
     def __init__(self, img, reg_lab, nb_segs, color_histogram_bins_size = 25, texture_histogram_bins_size = 10):
-        img_height, img_width, img_channels = img.shape
-        self.img_area = img_height * img_width
-        self.region_areas = np.zeros((nb_segs,), dtype = np.int64)
-        self.color_histograms = np.zeros((nb_segs, img_channels, color_histogram_bins_size), dtype = np.float32)
-        self.texture_histograms = np.zeros((nb_segs, img_channels, 8 * texture_histogram_bins_size), dtype = np.float32)
+        img = torch.as_tensor(img).movedim(-1, -3)
+        reg_lab = torch.as_tensor(reg_lab, dtype = torch.int64)
+
+        img_channels, img_height, img_width = img.shape[-3:]
+        self.img_size = img_height * img_width
+        self.color_histograms   = torch.zeros((nb_segs, img_channels, 1 * color_histogram_bins_size  ), dtype = torch.float32)
+        self.texture_histograms = torch.zeros((nb_segs, img_channels, 8 * texture_histogram_bins_size), dtype = torch.float32)
+        self.region_sizes = torch.zeros((nb_segs, ), dtype = torch.int64)
+        self.xyxy = torch.zeros((nb_segs, 4), dtype = torch.int64)
         
-        points = [[] for k in range(nb_segs)]
-        for i in range(reg_lab.shape[0]):
-            for j in range(reg_lab.shape[1]): 
-                points[reg_lab[i, j]].append( (j, i) )
-                self.region_areas[reg_lab[i, j]] += 1
-        self.bounding_rects = [cv2.boundingRect(np.array(pts)) for pts in points]
         
-        for r in range(len(region_areas)):
+        #points = [[] for k in range(nb_segs)]
+        #for i in range(reg_lab.shape[0]):
+        #    for j in range(reg_lab.shape[1]): 
+        #        points[reg_lab[i, j]].append( (j, i) )
+        #        self.region_sizes[reg_lab[i, j]] += 1
+        #self.bounding_boxes = [cv2.boundingRect(np.array(pts)) for pts in points]
+
+        for y in range(reg_lab.shape[-2]):
+            for x in range(reg_lab.shape[-1]):
+                xyxy = self.xyxy[reg_lab[y, x]]
+                xyxy[0].clamp_(max = x)
+                xyxy[1].clamp_(max = y)
+                xyxy[2].clamp_(min = x)
+                xyxy[3].clamp_(max = y)
+        Z = reg_lab.flatten(start_dim = -2)
+        self.region_sizes = torch.zeros((nb_segs, ), dtype = torch.int64).scatter_add_(-1, Z, Z.new_ones(1).expand_as(Z))
+        
+        for r in range(len(region_sizes)):
             mask = (reg_lab == r).astype(np.uint8) * 255
             for p in range(img_channels):
                 self.color_histograms[r, p] = np.squeeze(cv2.calcHist([img[..., p]], [0], mask, [color_histogram_bins_size], [0, 256]))
@@ -162,16 +179,16 @@ class HandcraftedRegionFeatures:
         self.texture_histograms /= np.sum(self.texture_histograms, axis = (1, 2), keepdims = True)
 
     def merge(self, r1, r2):
-        self.bounding_rects[r1] = self.bounding_rects[r2] = bbox_merge(self.bounding_rects[r1], self.bounding_rects[r2])
-        self.region_areas[r1] = self.region_areas[r2] = self.region_areas[r1] + self.region_areas[r2]
-        self.color_histograms[r1] = self.color_histograms[r2] = (self.color_histograms[r1] * self.region_areas[r1] + self.color_histograms[r2] * self.region_areas[r2]) / (self.region_areas[r1] + self.region_areas[r2]) 
-        self.texture_histograms[r1] = self.texture_histograms[r2] = (self.texture_histograms[r1] * self.region_areas[r1] + self.texture_histograms[r2] * self.region_areas[r2]) / (self.region_areas[r1] + self.region_areas[r2]) 
+        self.bounding_boxes[r1] = self.bounding_boxes[r2] = bbox_merge(self.bounding_boxes[r1], self.bounding_boxes[r2])
+        self.region_sizes[r1] = self.region_sizes[r2] = self.region_sizes[r1] + self.region_sizes[r2]
+        self.color_histograms[r1] = self.color_histograms[r2] = (self.color_histograms[r1] * self.region_sizes[r1] + self.color_histograms[r2] * self.region_sizes[r2]) / (self.region_sizes[r1] + self.region_sizes[r2]) 
+        self.texture_histograms[r1] = self.texture_histograms[r2] = (self.texture_histograms[r1] * self.region_sizes[r1] + self.texture_histograms[r2] * self.region_sizes[r2]) / (self.region_sizes[r1] + self.region_sizes[r2]) 
 
     def Size(self, r1, r2):
-        return max(0.0, min(1.0, 1.0 - float(self.region_areas[r1] + self.region_areas[r2]) / float(self.img_area)))
+        return max(0.0, min(1.0, 1.0 - float(self.region_sizes[r1] + self.region_sizes[r2]) / float(self.img_size)))
     
     def Fill(self, r1, r2):
-        return max(0.0, min(1.0, 1.0 - float(bbox_area(bbox_merge(self.bounding_rects[r1], self.bounding_rects[r2])) - self.region_areas[r1] - self.region_areas[r2]) / float(self.img_area)))
+        return max(0.0, min(1.0, 1.0 - float(bbox_size(bbox_merge(self.bounding_boxes[r1], self.bounding_boxes[r2])) - self.region_sizes[r1] - self.region_sizes[r2]) / float(self.img_size)))
     
     def Color(self, r1, r2):
         return np.sum(np.minimum(self.color_histograms[r1], self.color_histograms[r2]))
