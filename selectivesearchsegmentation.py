@@ -108,20 +108,15 @@ class HandcraftedRegionFeatures:
         reg_lab = torch.as_tensor(reg_lab, dtype = torch.int64)
 
         img_channels, img_height, img_width = img.shape[-3:]
+        
         self.img_size = img_height * img_width
         self.color_histograms   = torch.zeros((nb_segs, img_channels, 1 * color_histogram_bins_size  ), dtype = torch.float32)
         self.texture_histograms = torch.zeros((nb_segs, img_channels, 8 * texture_histogram_bins_size), dtype = torch.float32)
-        self.region_sizes = torch.zeros((nb_segs, ), dtype = torch.int64)
         self.xyxy = torch.zeros((nb_segs, 4), dtype = torch.int64)
         
+        Z = reg_lab.flatten(start_dim = -2)
+        self.region_sizes = torch.zeros((nb_segs, ), dtype = torch.int64).scatter_add_(-1, Z, Z.new_ones(1).expand_as(Z))
         
-        #points = [[] for k in range(nb_segs)]
-        #for i in range(reg_lab.shape[0]):
-        #    for j in range(reg_lab.shape[1]): 
-        #        points[reg_lab[i, j]].append( (j, i) )
-        #        self.region_sizes[reg_lab[i, j]] += 1
-        #self.bounding_boxes = [cv2.boundingRect(np.array(pts)) for pts in points]
-
         for y in range(reg_lab.shape[-2]):
             for x in range(reg_lab.shape[-1]):
                 xyxy = self.xyxy[reg_lab[y, x]]
@@ -129,14 +124,15 @@ class HandcraftedRegionFeatures:
                 xyxy[1].clamp_(max = y)
                 xyxy[2].clamp_(min = x)
                 xyxy[3].clamp_(max = y)
-        Z = reg_lab.flatten(start_dim = -2)
-        self.region_sizes = torch.zeros((nb_segs, ), dtype = torch.int64).scatter_add_(-1, Z, Z.new_ones(1).expand_as(Z))
         
-        for r in range(len(region_sizes)):
-            mask = (reg_lab == r).astype(np.uint8) * 255
-            for p in range(img_channels):
-                self.color_histograms[r, p] = np.squeeze(cv2.calcHist([img[..., p]], [0], mask, [color_histogram_bins_size], [0, 256]))
-        self.color_histograms /= np.sum(self.color_histograms, axis = (1, 2), keepdims = True)
+        Z = (reg_lab * color_histogram_bins_size + (img / (256.0 / color_histogram_bins_size)).to(torch.int64)).flatten(start_dim = -2)
+        self.color_histograms = torch.zeros((img_channels, nb_segs * color_histogram_bins_size), dtype = torch.int64).scatter_add_(-1, Z, Z.new_ones(1).expand_as(Z)).view(img_channels, nb_segs, -1).transpose(-2, -3)
+
+        #for r in range(len(region_sizes)):
+        #    mask = (reg_lab == r).astype(np.uint8) * 255
+        #    for p in range(img_channels):
+        #        self.color_histograms[r, p] = np.squeeze(cv2.calcHist([img[..., p]], [0], mask, [color_histogram_bins_size], [0, 256]))
+        #self.color_histograms /= np.sum(self.color_histograms, axis = (1, 2), keepdims = True)
 
         img_gaussians = []
         for p in range(img_channels):
