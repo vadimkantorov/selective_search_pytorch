@@ -8,15 +8,12 @@ import cv2
 import cv2.ximgproc.segmentation
 
 @dataclasses.dataclass(order = True)
-class Region:
+class RegionNode:
     rank : float
     id : int
     level : int
     merged_to : int
     bbox : tuple
-
-    def compute_rank(self):
-        self.rank = self.level * random.random()
 
 @dataclasses.dataclass(order = True)
 class Edge:
@@ -25,19 +22,8 @@ class Edge:
     to : int
     removed : bool
 
-class RegionSimilarity:
-    def __init__(self, features, strategies):
-        self.merge = features.merge
-        self.features = features
-        self.strategies = strategies
-        self.weights = [1.0 / len(strategies)] * len(strategies)
-
-    def __call__(self, r1, r2):
-        return sum(self.weights[i] * s(self.features, r1, r2) for i, s in enumerate(self.strategies)) / sum(self.weights)
-
-def bbox_merge(xywh1, xywh2):
-    boxPoints = lambda x, y, w, h: [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)]
-    return cv2.boundingRect(np.array(boxPoints(*xywh1) + boxPoints(*xywh2)))
+def RegionSimilarity(features, strategies):
+    return lambda r1, r2: sum((1.0 / len(strategies)) * s(features, r1, r2) for i, s in enumerate(strategies)) 
 
 def bbox_wh(xywh):
     return (xywh[-2], xywh[-1])
@@ -45,66 +31,60 @@ def bbox_wh(xywh):
 def bbox_area(xywh):
     return xywh[-2] * xywh[-1]
 
-def selectiveSearch(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
+def bbox_merge(xywh1, xywh2):
+    boxPoints = lambda x, y, w, h: [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)]
+    return cv2.boundingRect(np.array(boxPoints(*xywh1) + boxPoints(*xywh2)))
+
+def selective_search(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
     hsv, lab, gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2Lab), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     
     if fast:
-        segmentations = [ cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 2, inc_k) ]
         images = [hsv, lab]
+        segmentations = [ cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 2, inc_k) ]
         strategies = lambda features: [RegionSimilarity(features, [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size])]
     else:
+        images = [hsv, lab, gray[..., None], hsv[..., :1], np.stack([img_bgr[..., 2], img_bgr[..., 1], gray], axis = -1)]
         segmentations = [ cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 4, inc_k) ]
-        images = [hsv, lab, gray, hsv[..., 0], np.stack([img_bgr[..., 2], img_bgr[..., 1], gray], axis = -1)]
         strategies = lambda features: [RegionSimilarity(features, [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Size])]
             
-    all_regions = []
-    for image in images:
-        for gs in segmentations:
-            img_regions = gs.processImage(image)
-            nb_segs = 1 + int(img_regions.max())
+    all_regs = []
+    for img in images:
+            reg_lab = gs.processImage(img)
+            nb_segs = 1 + int(reg_lab.max())
 
-            graph_adj, region_areas = np.zeros((nb_segs, nb_segs), dtype = bool), np.zeros((nb_segs,), dtype = np.int64)
-            
-            points = [[] for i in range(nb_segs)]
-            
-            for i in range(img_regions.shape[0]):
-                for j in range(img_regions.shape[1]): 
-                    p, pr = img_regions[i], (img_regions[i - 1] if i > 0 else None)
-                    points[p[j]].append((j, i))
-                    region_areas[p[j]] += 1
-
+            graph_adj = np.zeros((nb_segs, nb_segs), dtype = bool)
+            for i in range(reg_lab.shape[0]):
+                p, pr = reg_lab[i], (reg_lab[i - 1] if i > 0 else None)
+                for j in range(reg_lab.shape[1]): 
                     if i > 0 and j > 0:
                         graph_adj[p [j - 1], p[j]] = graph_adj[p[j], p [j - 1]] = True
                         graph_adj[pr[j    ], p[j]] = graph_adj[p[j], pr[j    ]] = True
                         graph_adj[pr[j - 1], p[j]] = graph_adj[p[j], pr[j - 1]] = True
 
-            bounding_rects = [cv2.boundingRect(np.array(pts)) for pts in points]
-            features = HandcraftedRegionFeatures(image, img_regions, region_areas)
-            
-            all_regions.extend(region for strategy in strategies(features) for region in hierarchicalGrouping(strategy, graph_adj, region_areas, bounding_rects))
+            features = HandcraftedRegionFeatures(img, reg_lab, nb_segs)
+            all_regs.extend(reg for strategy in strategies(features) for reg in hierarchical_grouping(strategy, graph_adj))
     
-    return list({region.bbox : True for region in sorted(all_regions, key = lambda r: r.rank)}.keys())
+    return list({region.bbox : True for reg in sorted(all_regs, key = lambda r: r.rank)}.keys())
 
-def hierarchicalGrouping(s, graph_adj, region_areas, bounding_rects):
-    region_areas = region_areas.copy()
-    regions, PQ = [], []
+def hierarchical_grouping(strategy, graph_adj, compute_rank = lambda region: region.level * random.random()):
+    regs, PQ = [], []
 
     for i in range(len(bounding_rects)):
-        regions.append(Region(id = i, level = 1, merged_to = -1, bbox = bounding_rects[i], rank = 0))
+        regs.append(RegionNode(id = i, level = 1, merged_to = -1, bbox = bounding_rects[i], rank = 0))
         for j in range(i + 1, len(bounding_rects)):
             if graph_adj[i, j]:
-                PQ.append(Edge(fro = i, to = j, similarity = s(i, j), removed = False))
+                PQ.append(Edge(fro = i, to = j, similarity = strategy(i, j), removed = False))
     
     while PQ:
         PQ.sort(key = lambda sim: sim.similarity)
         e = PQ.pop()
         u, v = e.fro, e.to
         
-        reg_fro, reg_to = regions[u], regions[v]
-        regions.append(Region(id = min(reg_fro.id, reg_to.id), level = 1 + max(reg_fro.level, reg_to.level), merged_to = -1, bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), rank = 0))
-        regions[u].merged_to = regions[v].merged_to = len(regions) - 1
-        s.merge(reg_fro.id, reg_to.id)
-        region_areas[reg_to.id] = region_areas[reg_fro.id] = region_areas[reg_fro.id] + region_areas[reg_to.id]
+        reg_fro, reg_to = regs[u], regs[v]
+        regs.append(RegionNode(id = min(reg_fro.id, reg_to.id), level = 1 + max(reg_fro.level, reg_to.level), merged_to = -1, bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), rank = 0))
+        regs[u].merged_to = regs[v].merged_to = len(regs) - 1
+        
+        strategy.merge(reg_fro.id, reg_to.id)
         
         local_neighbours = set()
         for e in PQ:
@@ -113,33 +93,34 @@ def hierarchicalGrouping(s, graph_adj, region_areas, bounding_rects):
                 e.removed = True
         PQ = [sim for sim in PQ if not sim.removed]
         for local_neighbour in local_neighbours:
-            PQ.append(Edge(fro = len(regions) - 1, to = local_neighbour, similarity = s(regions[len(regions) - 1].id, regions[local_neighbour].id), removed = False))
+            PQ.append(Edge(fro = len(regs) - 1, to = local_neighbour, similarity = strategy(regs[len(regs) - 1].id, regs[local_neighbour].id), removed = False))
 
-    for region in regions:
-        region.compute_rank()
+    for region in regs:
+        region.rank = compute_rank(region)
 
-    return regions
+    return regs
 
 class HandcraftedRegionFeatures:
-    def __init__(self, img, regions, region_areas, color_histogram_bins_size = 25, texture_histogram_bins_size = 10):
+    def __init__(self, img, reg_lab, nb_segs, color_histogram_bins_size = 25, texture_histogram_bins_size = 10):
         img_height, img_width, img_channels = img.shape
-        self.region_areas = region_areas
         self.img_area = img_height * img_width
+        self.region_areas = np.zeros((nb_segs,), dtype = np.int64)
+        self.color_histograms = np.zeros((nb_segs, img_channels, color_histogram_bins_size), dtype = np.float32)
+        self.texture_histograms = np.zeros((nb_segs, img_channels, 8 * texture_histogram_bins_size), dtype = np.float32)
         
-        points = [[] for k in range(len(region_areas))]
-        for i in range(regions.shape[0]):
-            for j in range(regions.shape[1]): 
-                points[regions[i, j]].append( (j, i) )
+        points = [[] for k in range(nb_segs)]
+        for i in range(reg_lab.shape[0]):
+            for j in range(reg_lab.shape[1]): 
+                points[reg_lab[i, j]].append( (j, i) )
+                self.region_areas[reg_lab[i, j]] += 1
         self.bounding_rects = [cv2.boundingRect(np.array(pts)) for pts in points]
         
-        self.color_histograms = np.zeros((len(region_areas), img_channels, color_histogram_bins_size), dtype = np.float32)
         for r in range(len(region_areas)):
-            mask = (regions == r).astype(np.uint8) * 255
+            mask = (reg_lab == r).astype(np.uint8) * 255
             for p in range(img_channels):
                 self.color_histograms[r, p] = np.squeeze(cv2.calcHist([img[..., p]], [0], mask, [color_histogram_bins_size], [0, 256]))
         self.color_histograms /= np.sum(self.color_histograms, axis = (1, 2), keepdims = True)
 
-        self.texture_histograms = np.zeros((len(region_areas), img_channels, 8 * texture_histogram_bins_size), dtype = np.float32)
         img_gaussians = []
         for p in range(img_channels):
             img_plane = img[..., p]
@@ -171,19 +152,20 @@ class HandcraftedRegionFeatures:
             hmin, hmax = img_plane.min(), img_plane.max()
             img_gaussians[i] = (255 * (img_plane - hmin) / (hmax - hmin)).astype(np.uint8)
 
-        for i in range(regions.shape[0]):
-            for j in range(regions.shape[1]):
+        for i in range(reg_lab.shape[0]):
+            for j in range(reg_lab.shape[1]):
                 for p in range(img_channels):
                     for k in range(8):
                         val = int(img_gaussians[p * 8 + k][i, j])
                         bin = int(float(val) / (256.0 / texture_histogram_bins_size))
-                        self.texture_histograms[regions[i, j], p, k * texture_histogram_bins_size + bin] += 1
+                        self.texture_histograms[reg_lab[i, j], p, k * texture_histogram_bins_size + bin] += 1
         self.texture_histograms /= np.sum(self.texture_histograms, axis = (1, 2), keepdims = True)
 
     def merge(self, r1, r2):
+        self.bounding_rects[r1] = self.bounding_rects[r2] = bbox_merge(self.bounding_rects[r1], self.bounding_rects[r2])
+        self.region_areas[r1] = self.region_areas[r2] = self.region_areas[r1] + self.region_areas[r2]
         self.color_histograms[r1] = self.color_histograms[r2] = (self.color_histograms[r1] * self.region_areas[r1] + self.color_histograms[r2] * self.region_areas[r2]) / (self.region_areas[r1] + self.region_areas[r2]) 
         self.texture_histograms[r1] = self.texture_histograms[r2] = (self.texture_histograms[r1] * self.region_areas[r1] + self.texture_histograms[r2] * self.region_areas[r2]) / (self.region_areas[r1] + self.region_areas[r2]) 
-        self.bounding_rects[r1] = self.bounding_rects[r2] = bbox_merge(self.bounding_rects[r1], self.bounding_rects[r2])
 
     def Size(self, r1, r2):
         return max(0.0, min(1.0, 1.0 - float(self.region_areas[r1] + self.region_areas[r2]) / float(self.img_area)))
@@ -210,7 +192,7 @@ if __name__ == '__main__':
     img = cv2.imread(args.input_path)
 
     if not args.opencv:
-        boxes_xywh = selectiveSearch(img, fast = args.fast)
+        boxes_xywh = selective_search(img, fast = args.fast)
     else:
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
         algo.setBaseImage(img)
