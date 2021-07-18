@@ -7,6 +7,36 @@ import numpy as np
 import cv2
 import cv2.ximgproc.segmentation
 import torch
+import torch.nn.functional as F
+
+def sobel_filter() -> '2133':
+    flipped_sobel_x = torch.tensor([
+        [-1, 0, 1],
+        [-2, 0, 2],
+        [-1, 0, 1]
+    ])
+    return torch.stack([flipped_sobel_x, flipped_sobel_x.t()]).unsqueeze(1)
+    
+def scharr_filter() -> '2133':
+    flipped_scharr_x = torch.tensor([
+        [-3, 0, 3 ],
+        [10, 0, 10],
+        [-3, 0, 3 ]
+    ])
+    return torch.stack([flipped_scharr_x, flipped_scharr_x.t()]).unsqueeze(1)
+
+def image_gradients(img : 'BCHW', kernel, mode = None) -> 'BC2HW':
+    components = F.conv2d(img.flatten(end_dim = -3).unsqueeze(1), kernel).unflatten(0, img.shape[:-2])
+    
+    dx, dy = components.unbind(dim = -3)
+    magnitude = lambda dx, dy: (dy ** 2 + dx ** 2) ** 0.5
+    angle = lambda dx, dy: torch.atan2(dy, dx)
+    
+    if mode == 'magnitude': return magnitude(dx, dy)
+    if mode == 'angle': return angle(dx, dy)
+    if mode == 'magnitude_angle': return torch.stack([magnitude(dx, dy), angle(dx, dy)], dim = -3)
+
+    return components
 
 @dataclasses.dataclass(order = True)
 class RegionNode:
@@ -30,22 +60,59 @@ def bbox_wh(xywh):
     return (xywh[-2], xywh[-1])
 
 def bbox_size(xywh):
-    return xywh[-2] * xywh[-1]
+    return int(xywh[-2]) * int(xywh[-1])
 
 def bbox_merge(xywh1, xywh2):
     boxPoints = lambda x, y, w, h: [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)]
-    return cv2.boundingRect(np.array(boxPoints(*xywh1) + boxPoints(*xywh2)))
+    points = boxPoints(*xywh1) + boxPoints(*xywh2)
+    x1 = min(x1 for x1, y1, x2, y2 in points)
+    y1 = min(y1 for x1, y1, x2, y2 in points)
+    x2 = max(x2 for x1, y1, x2, y2 in points)
+    y2 = max(y2 for x1, y1, x2, y2 in points)
+    return (x1, y1, x2 - x1, y2 - y1)
+
+def image_gaussian_derivatives(img):
+    image_threshold = lambda img: [img.clamp(min = 0), img.clamp(max = 0)]
+    image_gradients = lambda img: [cv2.Scharr(img_plane, cv2.CV_32F, *gr) for gr in [(1, 0), (0, 1)]]
+
+    img_height, img_width = img.shape[-2:]
+    center1 = (img_width / 2.0, img_height / 2.0)
+    rot1 = cv2.getRotationMatrix2D(center1, 45.0, 1.0)
+    xywh1 = cv2.boundingRect(cv2.boxPoints((center1, (img_width, img_height), 45.0)))
+    rot1[0, 2] += xywh1[-2] / 2.0 - center1[0]
+    rot1[1, 2] += xywh1[-1] / 2.0 - center1[1]
+    startx1, starty1 = int(max(0, (xywh1[-2] - img_width) / 2)), int(max(0, (xywh1[-1] - img_height) / 2))
+    
+    img_rotated = cv2.warpAffine(img, rot1, bbox_wh(xywh1))
+
+    center2 = (int(img_plane_rotated.shape[-1] / 2.0), int(img_plane_rotated.shape[-2] / 2.0))
+    rot2 = cv2.getRotationMatrix2D(center2, -45.0, 1.0)
+    xywh2 = cv2.boundingRect(cv2.boxPoints((center2, (img_rotated.shape[-1], img_rotated.shape[-2]), -45.0)))
+
+    img_gradients = image_gradients(img)
+    img_rotated_gradients = image_gradients(img_rotated)
+    img_rotated_gradients = cv2.warpAffine(img_rotated_gradients, rot2, bbox_wh(xywh2))[starty1 : starty1 + img_height, startx1 : startx1 + img_width]
+    
+    img_gaussians = []
+    for img_plane, img_plane_rotated in zip(img.unbind(-3), img_rotated.unbind(-3)):
+        for tmp_gradient in img_gradients:
+            img_gaussians.extend(image_threshold(tmp_gradient))
+
+        for tmp_gradient in img_rotated_gradients:
+            img_gaussians.extend(image_threshold(tmp_gradients))
+
+    return torch.stack(image_gaussians, dim = -3)
 
 def selective_search(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
     hsv, lab, gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2Lab), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     
     if fast:
         images = [hsv, lab]
-        segmentations = [ cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 2, inc_k) ]
+        segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 2, inc_k)]
         strategies = lambda features: [RegionSimilarity(features, [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size])]
     else:
         images = [hsv, lab, gray[..., None], hsv[..., :1], np.stack([img_bgr[..., 2], img_bgr[..., 1], gray], axis = -1)]
-        segmentations = [ cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 4, inc_k) ]
+        segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 4, inc_k)]
         strategies = lambda features: [RegionSimilarity(features, [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Size])]
             
     all_regs = []
@@ -64,7 +131,7 @@ def selective_search(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size =
                         graph_adj[pr[j - 1], p[j]] = graph_adj[p[j], pr[j - 1]] = True
 
             features = HandcraftedRegionFeatures(img, reg_lab, nb_segs)
-            all_regs.extend(reg for strategy in strategies(features) for reg in hierarchical_grouping(strategy, graph_adj, features.xyxy))
+            all_regs.extend(reg for strategy in strategies(features) for reg in hierarchical_grouping(strategy, graph_adj, features.xywh))
     
     return list({region.bbox : True for reg in sorted(all_regs, key = lambda r: r.rank)}.keys())
 
@@ -108,89 +175,49 @@ class HandcraftedRegionFeatures:
         reg_lab = torch.as_tensor(reg_lab, dtype = torch.int64)
 
         img_channels, img_height, img_width = img.shape[-3:]
-        
         self.img_size = img_height * img_width
-        self.color_histograms   = torch.zeros((nb_segs, img_channels, 1 * color_histogram_bins_size  ), dtype = torch.float32)
-        self.texture_histograms = torch.zeros((nb_segs, img_channels, 8 * texture_histogram_bins_size), dtype = torch.float32)
-        self.xyxy = torch.zeros((nb_segs, 4), dtype = torch.int64)
         
-        Z = reg_lab.flatten(start_dim = -2)
-        self.region_sizes = torch.zeros((nb_segs, ), dtype = torch.int64).scatter_add_(-1, Z, Z.new_ones(1).expand_as(Z))
-        
+        self.xywh = torch.tensor([[img_wdith, img_height, 0, 0]], dtype = torch.int64).repeat(nb_segs, 1)
         for y in range(reg_lab.shape[-2]):
             for x in range(reg_lab.shape[-1]):
-                xyxy = self.xyxy[reg_lab[y, x]]
-                xyxy[0].clamp_(max = x)
-                xyxy[1].clamp_(max = y)
-                xyxy[2].clamp_(min = x)
-                xyxy[3].clamp_(max = y)
+                xywh = self.xywh[reg_lab[y, x]]
+                xywh[0].clamp_(max = x)
+                xywh[1].clamp_(max = y)
+                xywh[2].clamp_(min = x)
+                xywh[3].clamp_(max = y)
+        self.xywh[..., 2] -= self.xywh[..., 0]
+        self.xywh[..., 3] -= self.xywh[..., 1]
+        
+        Z = reg_lab.flatten(start_dim = -2)
+        self.region_sizes = torch.zeros((nb_segs, ), dtype = torch.int64).scatter_add_(-1, Z, torch.ones(1, device = Z.device, dtype = Z.dtype).expand_as(Z))
         
         Z = (reg_lab * color_histogram_bins_size + (img / (256.0 / color_histogram_bins_size)).to(torch.int64)).flatten(start_dim = -2)
-        self.color_histograms = torch.zeros((img_channels, nb_segs * color_histogram_bins_size), dtype = torch.int64).scatter_add_(-1, Z, Z.new_ones(1).expand_as(Z)).view(img_channels, nb_segs, -1).transpose(-2, -3)
+        self.color_histograms = torch.zeros((img_channels, nb_segs * color_histogram_bins_size), dtype = torch.float32).scatter_add_(-1, Z, torch.ones(1, dtype = torch.float32, device = Z.device).expand_as(Z)).view(img_channels, nb_segs, -1).movedim(-2, -3)
+        self.color_histograms /= self.color_histograms.sum(dim = (-2, -1), keepdim = True)
 
-        #for r in range(len(region_sizes)):
-        #    mask = (reg_lab == r).astype(np.uint8) * 255
-        #    for p in range(img_channels):
-        #        self.color_histograms[r, p] = np.squeeze(cv2.calcHist([img[..., p]], [0], mask, [color_histogram_bins_size], [0, 256]))
-        #self.color_histograms /= np.sum(self.color_histograms, axis = (1, 2), keepdims = True)
-
-        img_gaussians = []
-        for p in range(img_channels):
-            img_plane = img[..., p]
-            
-            center = (img_width / 2.0, img_height / 2.0)
-            rot = cv2.getRotationMatrix2D(center, 45.0, 1.0)
-            xywh = cv2.boundingRect(cv2.boxPoints((center, (img_width, img_height), 45.0)))
-            rot[0, 2] += xywh[-2] / 2.0 - center[0]
-            rot[1, 2] += xywh[-1] / 2.0 - center[1]
-            img_plane_rotated = cv2.warpAffine(img_plane, rot, bbox_wh(xywh))
-            img_plane_rotated_size = img_plane_rotated.shape[0] * img_plane_rotated.shape[1]
-            
-            center = (int(img_plane_rotated.shape[1] / 2.0), int(img_plane_rotated.shape[0] / 2.0))
-            rot = cv2.getRotationMatrix2D(center, -45.0, 1.0)
-            xywh2 = cv2.boundingRect(cv2.boxPoints((center, (img_plane_rotated.shape[1], img_plane_rotated.shape[0]), -45.0)))
-            start_x, start_y = int(max(0, (xywh[-2] - img_width) / 2)), int(max(0, (xywh[-1] - img_height) / 2))
-
-            for gr in [(1, 0), (0, 1)]:
-                tmp_gradient = cv2.Scharr(img_plane, cv2.CV_32F, *gr)
-                img_gaussians.extend(cv2.threshold(tmp_gradient, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV])
-
-            for gr in [(1, 0), (0, 1)]:
-                tmp_gradient = cv2.Scharr(img_plane_rotated, cv2.CV_32F, *gr)
-                tmp_rot = cv2.warpAffine(tmp_gradient, rot, bbox_wh(xywh2))
-                tmp_rot = tmp_rot[start_y : start_y + img_height, start_x : start_x + img_width]
-                img_gaussians.extend(cv2.threshold(tmp_rot, 0, 0, type)[-1] for type in [cv2.THRESH_TOZERO, cv2.THRESH_TOZERO_INV])
-
-        for i, img_plane in enumerate(img_gaussians):
-            hmin, hmax = img_plane.min(), img_plane.max()
-            img_gaussians[i] = (255 * (img_plane - hmin) / (hmax - hmin)).astype(np.uint8)
-
-        for i in range(reg_lab.shape[0]):
-            for j in range(reg_lab.shape[1]):
-                for p in range(img_channels):
-                    for k in range(8):
-                        val = int(img_gaussians[p * 8 + k][i, j])
-                        bin = int(float(val) / (256.0 / texture_histogram_bins_size))
-                        self.texture_histograms[reg_lab[i, j], p, k * texture_histogram_bins_size + bin] += 1
-        self.texture_histograms /= np.sum(self.texture_histograms, axis = (1, 2), keepdims = True)
+        img_gaussians = image_gaussian_derivatives(img)
+        hmin, hmax = img_gaussians.amin(dim = (-2, -1), keepdim = True), img_gaussians.amax(dim = (-2, -1), keepdim = True)
+        Z = (reg_lab * texture_histogram_bins_size + (((img_gaussians - hmin) / (hmax - hmin) * 255) / (256.0 / texture_histogram_bins_size)).to(torch.int64)).flatten(start_dim = -2)
+        self.texture_histograms = torch.zeros((img_channels, 8, nb_segs * texture_histogram_bins_size), dtype = torch.float32).scatter_add_(-1, Z, torch.ones(1, dtype = torch.float32, device = Z.device).expand_as(Z)).view(img_channels, 8, nb_segs, -1).movedim(-2, -5)
+        self.texture_histograms /= self.texture_histograms.sum(dim = (-3, -2, -1), keepdim = True)
 
     def merge(self, r1, r2):
-        self.bounding_boxes[r1] = self.bounding_boxes[r2] = bbox_merge(self.bounding_boxes[r1], self.bounding_boxes[r2])
+        self.xywh[r1] = self.xywh[r2] = bbox_merge(self.xywh[r1], self.xywh[r2])
         self.region_sizes[r1] = self.region_sizes[r2] = self.region_sizes[r1] + self.region_sizes[r2]
         self.color_histograms[r1] = self.color_histograms[r2] = (self.color_histograms[r1] * self.region_sizes[r1] + self.color_histograms[r2] * self.region_sizes[r2]) / (self.region_sizes[r1] + self.region_sizes[r2]) 
         self.texture_histograms[r1] = self.texture_histograms[r2] = (self.texture_histograms[r1] * self.region_sizes[r1] + self.texture_histograms[r2] * self.region_sizes[r2]) / (self.region_sizes[r1] + self.region_sizes[r2]) 
+    
+    def Fill(self, r1, r2):
+        return max(0.0, min(1.0, 1.0 - float(bbox_size(bbox_merge(self.xywh[r1], self.xywh[r2])) - self.region_sizes[r1] - self.region_sizes[r2]) / float(self.img_size)))
 
     def Size(self, r1, r2):
         return max(0.0, min(1.0, 1.0 - float(self.region_sizes[r1] + self.region_sizes[r2]) / float(self.img_size)))
     
-    def Fill(self, r1, r2):
-        return max(0.0, min(1.0, 1.0 - float(bbox_size(bbox_merge(self.bounding_boxes[r1], self.bounding_boxes[r2])) - self.region_sizes[r1] - self.region_sizes[r2]) / float(self.img_size)))
-    
     def Color(self, r1, r2):
-        return np.sum(np.minimum(self.color_histograms[r1], self.color_histograms[r2]))
+        return torch.min(self.color_histograms[r1], self.color_histograms[r2]).sum(dim = (-2, -1))
 
     def Texture(self, r1, r2):
-        return np.sum(np.minimum(self.texture_histograms[r1], self.texture_histograms[r2]))
+        return torch.min(self.texture_histograms[r1], self.texture_histograms[r2]).sum(dim = (-2, -1))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
