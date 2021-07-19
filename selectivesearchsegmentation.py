@@ -3,29 +3,18 @@ import random
 import dataclasses
 import copy
 
-import numpy as np
 import cv2
 import cv2.ximgproc.segmentation
 import torch
 import torch.nn.functional as F
 
-def sobel_filter() -> '2133':
-    flipped_sobel_x = torch.tensor([
-        [-1, 0, 1],
-        [-2, 0, 2],
-        [-1, 0, 1]
-    ])
-    return torch.stack([flipped_sobel_x, flipped_sobel_x.t()]).unsqueeze(1)
-    
-def scharr_filter() -> '2133':
+def image_scharr_gradients(img : 'BCHW') -> 'BC2HW':
     flipped_scharr_x = torch.tensor([
         [-3, 0, 3 ],
         [10, 0, 10],
         [-3, 0, 3 ]
     ])
-    return torch.stack([flipped_scharr_x, flipped_scharr_x.t()]).unsqueeze(1)
-
-def image_gradients(img : 'BCHW', kernel, mode = None) -> 'BC2HW':
+    kernel = torch.stack([flipped_scharr_x, flipped_scharr_x.t()]).unsqueeze(1)
     components = F.conv2d(img.flatten(end_dim = -3).unsqueeze(1), kernel).unflatten(0, img.shape[:-2])
     
     dx, dy = components.unbind(dim = -3)
@@ -71,10 +60,10 @@ def bbox_merge(xywh1, xywh2):
     y2 = max(y2 for x1, y1, x2, y2 in points)
     return (x1, y1, x2 - x1, y2 - y1)
 
-def image_gaussian_derivatives(img):
-    image_threshold = lambda img: [img.clamp(min = 0), img.clamp(max = 0)]
-    image_gradients = lambda img: [cv2.Scharr(img_plane, cv2.CV_32F, *gr) for gr in [(1, 0), (0, 1)]]
+def cvtColor(img_rgb, mode):
+    return torch.as_tensor(cv2.cvtColor(img_rgb.movedim(-3, -1).numpy(), getattr(cv2, mode))).movedim(-3, -1) 
 
+def image_gaussian_derivatives(img):
     img_height, img_width = img.shape[-2:]
     center1 = (img_width / 2.0, img_height / 2.0)
     rot1 = cv2.getRotationMatrix2D(center1, 45.0, 1.0)
@@ -89,48 +78,45 @@ def image_gaussian_derivatives(img):
     rot2 = cv2.getRotationMatrix2D(center2, -45.0, 1.0)
     xywh2 = cv2.boundingRect(cv2.boxPoints((center2, (img_rotated.shape[-1], img_rotated.shape[-2]), -45.0)))
 
-    img_gradients = image_gradients(img)
-    img_rotated_gradients = image_gradients(img_rotated)
+    img_gradients = image_scharr_gradients(img.unsqueeze(0)).squeeze(0)
+
+    img_rotated_gradients = image_scharr_gradients(img_rotated.unsqueeze(0)).squeeze(0)
     img_rotated_gradients = cv2.warpAffine(img_rotated_gradients, rot2, bbox_wh(xywh2))[starty1 : starty1 + img_height, startx1 : startx1 + img_width]
     
-    img_gaussians = []
-    for img_plane, img_plane_rotated in zip(img.unbind(-3), img_rotated.unbind(-3)):
-        for tmp_gradient in img_gradients:
-            img_gaussians.extend(image_threshold(tmp_gradient))
+    img_gaussians = torch.stack([thresholded for img_plane, img_plane_rotated in zip(img.unbind(-3), img_rotated.unbind(-3)) for tmp_gradient in img_gradients + img_rotated_gradients for thresholded in [img.clamp(min = 0), img.clamp(max = 0)]], dim = -3)
 
-        for tmp_gradient in img_rotated_gradients:
-            img_gaussians.extend(image_threshold(tmp_gradients))
+    return img_gaussians
 
-    return torch.stack(image_gaussians, dim = -3)
+def build_segment_graph(reg_lab):
+    nb_segs = 1 + int(reg_lab.max())
+    graph_adj = torch.zeros((nb_segs, nb_segs), dtype = torch.bool)
+    for i in range(reg_lab.shape[0]):
+        p, pr = reg_lab[i], (reg_lab[i - 1] if i > 0 else None)
+        for j in range(reg_lab.shape[1]): 
+            if i > 0 and j > 0:
+                graph_adj[p [j - 1], p[j]] = graph_adj[p[j], p [j - 1]] = True
+                graph_adj[pr[j    ], p[j]] = graph_adj[p[j], pr[j    ]] = True
+                graph_adj[pr[j - 1], p[j]] = graph_adj[p[j], pr[j - 1]] = True
+    return graph_adj
 
-def selective_search(img_bgr, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
-    hsv, lab, gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2Lab), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+def selective_search(img, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
+    hsv, lab, gray = [cvtColor(img, mode) for mode in ['COLOR_RGB2HSV', 'COLOR_RGB2Lab', 'COLOR_RGB2GRAY']]
     
     if fast:
         images = [hsv, lab]
         segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 2, inc_k)]
         strategies = lambda features: [RegionSimilarity(features, [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size])]
     else:
-        images = [hsv, lab, gray[..., None], hsv[..., :1], np.stack([img_bgr[..., 2], img_bgr[..., 1], gray], axis = -1)]
+        images = [hsv, lab, gray[..., None], hsv[..., :1], torch.stack([img_bgr[..., 2], img_bgr[..., 1], gray], axis = -1)]
         segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 4, inc_k)]
         strategies = lambda features: [RegionSimilarity(features, [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Size])]
             
     all_regs = []
     for img in images:
         for gs in segmentations:
-            reg_lab = gs.processImage(img)
-            nb_segs = 1 + int(reg_lab.max())
-
-            graph_adj = np.zeros((nb_segs, nb_segs), dtype = bool)
-            for i in range(reg_lab.shape[0]):
-                p, pr = reg_lab[i], (reg_lab[i - 1] if i > 0 else None)
-                for j in range(reg_lab.shape[1]): 
-                    if i > 0 and j > 0:
-                        graph_adj[p [j - 1], p[j]] = graph_adj[p[j], p [j - 1]] = True
-                        graph_adj[pr[j    ], p[j]] = graph_adj[p[j], pr[j    ]] = True
-                        graph_adj[pr[j - 1], p[j]] = graph_adj[p[j], pr[j - 1]] = True
-
-            features = HandcraftedRegionFeatures(img, reg_lab, nb_segs)
+            reg_lab = torch.as_tensor(gs.processImage(img.numpy()), dtype = torch.int64)
+            graph_adj = build_segment_graph(reg_lab)
+            features = HandcraftedRegionFeatures(img, reg_lab, len(graph_adj))
             all_regs.extend(reg for strategy in strategies(features) for reg in hierarchical_grouping(strategy, graph_adj, features.xywh))
     
     return list({region.bbox : True for reg in sorted(all_regs, key = lambda r: r.rank)}.keys())
@@ -171,9 +157,6 @@ def hierarchical_grouping(strategy, graph_adj, bbox, compute_rank = lambda regio
 
 class HandcraftedRegionFeatures:
     def __init__(self, img, reg_lab, nb_segs, color_histogram_bins_size = 25, texture_histogram_bins_size = 10):
-        img = torch.as_tensor(img).movedim(-1, -3)
-        reg_lab = torch.as_tensor(reg_lab, dtype = torch.int64)
-
         img_channels, img_height, img_width = img.shape[-3:]
         self.img_size = img_height * img_width
         
@@ -188,17 +171,17 @@ class HandcraftedRegionFeatures:
         self.xywh[..., 2] -= self.xywh[..., 0]
         self.xywh[..., 3] -= self.xywh[..., 1]
         
-        Z = reg_lab.flatten(start_dim = -2)
-        self.region_sizes = torch.zeros((nb_segs, ), dtype = torch.int64).scatter_add_(-1, Z, torch.ones(1, device = Z.device, dtype = Z.dtype).expand_as(Z))
+        Z = reg_lab
+        self.region_sizes = torch.zeros((nb_segs, ), dtype = torch.float32).scatter_(-1, Z.flatten(start_dim = -2), 1, reduce = 'add')
         
-        Z = (reg_lab * color_histogram_bins_size + (img / (256.0 / color_histogram_bins_size)).to(torch.int64)).flatten(start_dim = -2)
-        self.color_histograms = torch.zeros((img_channels, nb_segs * color_histogram_bins_size), dtype = torch.float32).scatter_add_(-1, Z, torch.ones(1, dtype = torch.float32, device = Z.device).expand_as(Z)).view(img_channels, nb_segs, -1).movedim(-2, -3)
+        Z = reg_lab * color_histogram_bins_size + (img / (256.0 / color_histogram_bins_size).to(torch.int64)
+        self.color_histograms = torch.zeros((img_channels, nb_segs * color_histogram_bins_size), dtype = torch.float32).scatter_(-1, Z.flatten(start_dim = -2), 1, reduce = 'add').view(img_channels, nb_segs, -1).movedim(-2, -3)
         self.color_histograms /= self.color_histograms.sum(dim = (-2, -1), keepdim = True)
 
         img_gaussians = image_gaussian_derivatives(img)
         hmin, hmax = img_gaussians.amin(dim = (-2, -1), keepdim = True), img_gaussians.amax(dim = (-2, -1), keepdim = True)
-        Z = (reg_lab * texture_histogram_bins_size + (((img_gaussians - hmin) / (hmax - hmin) * 255) / (256.0 / texture_histogram_bins_size)).to(torch.int64)).flatten(start_dim = -2)
-        self.texture_histograms = torch.zeros((img_channels, 8, nb_segs * texture_histogram_bins_size), dtype = torch.float32).scatter_add_(-1, Z, torch.ones(1, dtype = torch.float32, device = Z.device).expand_as(Z)).view(img_channels, 8, nb_segs, -1).movedim(-2, -5)
+        Z = reg_lab * texture_histogram_bins_size + (((img_gaussians - hmin) / (hmax - hmin) * 255) / (256.0 / texture_histogram_bins_size)).to(torch.int64)
+        self.texture_histograms = torch.zeros((img_channels, 8, nb_segs * texture_histogram_bins_size), dtype = torch.float32).scatter_(-1, Z.flatten(start_dim = -2), 1, reduce = 'add').view(img_channels, 8, nb_segs, -1).movedim(-2, -5)
         self.texture_histograms /= self.texture_histograms.sum(dim = (-3, -2, -1), keepdim = True)
 
     def merge(self, r1, r2):
