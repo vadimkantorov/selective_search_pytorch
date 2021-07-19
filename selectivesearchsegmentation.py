@@ -6,7 +6,9 @@ import copy
 import numpy as np
 import cv2
 import cv2.ximgproc.segmentation
+
 import torch
+import torchvision.transforms.functional as TF
 
 @dataclasses.dataclass(order = True)
 class RegionNode:
