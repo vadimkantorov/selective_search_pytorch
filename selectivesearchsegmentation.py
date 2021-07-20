@@ -85,8 +85,13 @@ def image_gaussian_derivatives(img):
 
 
     img_rotated_gradients = image_scharr_gradients(img_rotated.unsqueeze(0)).squeeze(0)
-    img_rotated_gradients = cv2.warpAffine(img_rotated_gradients, rot2, bbox_wh(xywh2))[starty1 : starty1 + img_height, startx1 : startx1 + img_width]
+
+    img_rotated_gradients = cv2.warpAffine(img_rotated_gradients, rot2, bbox_wh(xywh2))
+    
     # img_rotated_gradients = TF.rotate(img_rotated_gradients, -45, expand = True)
+
+    img_rotated_gradients = img_rotated_gradients[starty1 : starty1 + img_height, startx1 : startx1 + img_width]
+
     
     img_gaussians = torch.stack([thresholded for img_plane, img_plane_rotated in zip(img.unbind(-3), img_rotated.unbind(-3)) for tmp_gradient in img_gradients + img_rotated_gradients for thresholded in [img.clamp(min = 0), img.clamp(max = 0)]], dim = -3)
 
