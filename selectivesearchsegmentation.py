@@ -5,8 +5,10 @@ import copy
 
 import cv2
 import cv2.ximgproc.segmentation
+
 import torch
 import torch.nn.functional as F
+import torchvision.transforms.functional as TF
 
 def image_scharr_gradients(img : 'BCHW') -> 'BC2HW':
     flipped_scharr_x = torch.tensor([
@@ -64,6 +66,8 @@ def cvtColor(img_rgb, mode):
     return torch.as_tensor(cv2.cvtColor(img_rgb.movedim(-3, -1).numpy(), getattr(cv2, mode))).movedim(-3, -1) 
 
 def image_gaussian_derivatives(img):
+    img_gradients = image_scharr_gradients(img.unsqueeze(0)).squeeze(0)
+    
     img_height, img_width = img.shape[-2:]
     center1 = (img_width / 2.0, img_height / 2.0)
     rot1 = cv2.getRotationMatrix2D(center1, 45.0, 1.0)
@@ -73,15 +77,16 @@ def image_gaussian_derivatives(img):
     startx1, starty1 = int(max(0, (xywh1[-2] - img_width) / 2)), int(max(0, (xywh1[-1] - img_height) / 2))
     
     img_rotated = cv2.warpAffine(img, rot1, bbox_wh(xywh1))
+    #img_rotated = TF.rotate(img, 45.0, expand = True) 
 
     center2 = (int(img_plane_rotated.shape[-1] / 2.0), int(img_plane_rotated.shape[-2] / 2.0))
     rot2 = cv2.getRotationMatrix2D(center2, -45.0, 1.0)
     xywh2 = cv2.boundingRect(cv2.boxPoints((center2, (img_rotated.shape[-1], img_rotated.shape[-2]), -45.0)))
 
-    img_gradients = image_scharr_gradients(img.unsqueeze(0)).squeeze(0)
 
     img_rotated_gradients = image_scharr_gradients(img_rotated.unsqueeze(0)).squeeze(0)
     img_rotated_gradients = cv2.warpAffine(img_rotated_gradients, rot2, bbox_wh(xywh2))[starty1 : starty1 + img_height, startx1 : startx1 + img_width]
+    # img_rotated_gradients = TF.rotate(img_rotated_gradients, -45, expand = True)
     
     img_gaussians = torch.stack([thresholded for img_plane, img_plane_rotated in zip(img.unbind(-3), img_rotated.unbind(-3)) for tmp_gradient in img_gradients + img_rotated_gradients for thresholded in [img.clamp(min = 0), img.clamp(max = 0)]], dim = -3)
 
