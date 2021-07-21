@@ -11,6 +11,24 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
+@dataclasses.dataclass(order = True)
+class RegionNode:
+    rank : float
+    id : int
+    level : int
+    merged_to : int
+    bbox : tuple
+
+@dataclasses.dataclass(order = True)
+class Edge:
+    similarity : float
+    fro : int
+    to : int
+    removed : bool
+
+def RegionSimilarity(features, strategies):
+    return lambda r1, r2: sum((1.0 / len(strategies)) * s(features, r1, r2) for i, s in enumerate(strategies)) 
+
 def rgb_to_hsv(image, eps: float = 1e-6):
     # https://github.com/kornia/kornia/blob/master/kornia/color/hsv.py
     maxc, _ = image.max(-3)
@@ -104,24 +122,6 @@ def image_scharr_gradients(img : 'BCHW', mode = None) -> 'BC2HW':
 
     return components
 
-@dataclasses.dataclass(order = True)
-class RegionNode:
-    rank : float
-    id : int
-    level : int
-    merged_to : int
-    bbox : tuple
-
-@dataclasses.dataclass(order = True)
-class Edge:
-    similarity : float
-    fro : int
-    to : int
-    removed : bool
-
-def RegionSimilarity(features, strategies):
-    return lambda r1, r2: sum((1.0 / len(strategies)) * s(features, r1, r2) for i, s in enumerate(strategies)) 
-
 def bbox_wh(xywh):
     return (xywh[-2], xywh[-1])
 
@@ -157,26 +157,21 @@ def rotated_xywh(img_height, img_width, angle = 45.0, scale = 1.0):
     return boundingRect(list(map(rotate, points)))
 
 def image_gaussian_derivatives(img):
+    grads = image_scharr_gradients(img.unsqueeze(0)).squeeze(0)
+    
     img_height, img_width = img.shape[-2:]
-    
-    img_gradients = image_scharr_gradients(img.unsqueeze(0)).squeeze(0)
-    
     xywh = rotated_xywh(img_height, img_width, 45.0)
     startx, starty = int(max(0, (xywh[-2] - img_width) / 2)), int(max(0, (xywh[-1] - img_height) / 2))
-    
     img_rotated = TF.rotate(img, 45.0, expand = True) 
-    img_rotated_gradients = image_scharr_gradients(img_rotated.unsqueeze(0)).squeeze(0)
-    img_rotated_gradients = TF.rotate(img_rotated_gradients, -45.0, expand = True)
+    grads_rotated = image_scharr_gradients(img_rotated.unsqueeze(0)).squeeze(0)
+    grads_rotated = TF.rotate(grads_rotated, -45.0, expand = True)
+    grads_rotated = grads_rotated[..., starty : starty + img_height, startx : startx + img_width]
 
-    img_rotated_gradients = img_rotated_gradients[..., starty : starty + img_height, startx : startx + img_width]
-    
-    img_gaussians = torch.stack([thresholded for grad in torch.cat([img_gradients, img_rotated_gradients], dim = -3).flatten(end_dim = -3) for thresholded in [grad.clamp(min = 0), grad.clamp(max = 0)]], dim = -3).unflatten(-3, (img.shape[0], 8))
-
-    return img_gaussians
+    return torch.cat([grads.clamp(min = 0), grads.clamp(max = 0), grads_rotated.clamp(min = 0), grads_rotated.clamp(max = 0)], dim = -3)
 
 def build_segment_graph(reg_lab):
-    nb_segs = 1 + int(reg_lab.max())
-    graph_adj = torch.zeros((nb_segs, nb_segs), dtype = torch.bool)
+    num_segments = 1 + int(reg_lab.max())
+    graph_adj = torch.zeros((num_segments, num_segments), dtype = torch.bool)
     for i in range(reg_lab.shape[0]):
         p, pr = reg_lab[i], (reg_lab[i - 1] if i > 0 else None)
         for j in range(reg_lab.shape[1]): 
