@@ -1,3 +1,4 @@
+import math
 import argparse
 import random
 import dataclasses
@@ -10,14 +11,88 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
-def image_scharr_gradients(img : 'BCHW') -> 'BC2HW':
+def rgb_to_hsv(image, eps: float = 1e-6):
+    # https://github.com/kornia/kornia/blob/master/kornia/color/hsv.py
+    maxc, _ = image.max(-3)
+    maxc_mask = image == maxc.unsqueeze(-3)
+    _, max_indices = ((maxc_mask.cumsum(-3) == 1) & maxc_mask).max(-3)
+    minc = image.min(-3)[0]
+
+    v = maxc  # brightness
+
+    deltac = maxc - minc
+    s = deltac / (v + eps)
+
+    # avoid division by zero
+    deltac = torch.where(deltac == 0, torch.ones_like(deltac, device=deltac.device, dtype=deltac.dtype), deltac)
+
+    maxc_tmp = maxc.unsqueeze(-3) - image
+    rc, gc, bc = maxc_tmp.unbind(dim = -3)
+
+    h = torch.stack([bc - gc, 2.0 * deltac + rc - bc, 4.0 * deltac + gc - rc], dim=-3)
+
+    h = torch.gather(h, dim=-3, index=max_indices[..., None, :, :])
+    h = h.squeeze(-3)
+    h = h / deltac
+
+    h = (h / 6.0) % 1.0
+
+    h = 2 * math.pi * h
+
+    return torch.stack([h, s, v], dim=-3)
+
+
+def rgb_to_lab(image):
+    # https://github.com/kornia/kornia/blob/master/kornia/color/lab.py
+    
+    def rgb_to_xyz(image):
+        # https://github.com/kornia/kornia/blob/master/kornia/color/xyz.py
+        r, g, b = image.unbind(dim = -3)
+        x = 0.412453 * r + 0.357580 * g + 0.180423 * b
+        y = 0.212671 * r + 0.715160 * g + 0.072169 * b
+        z = 0.019334 * r + 0.119193 * g + 0.950227 * b
+        return torch.stack([x, y, z], -3)
+
+    def rgb_to_linear_rgb(image):
+        # https://github.com/kornia/kornia/blob/master/kornia/color/rgb.py
+        return torch.where(image > 0.04045, torch.pow(((image + 0.055) / 1.055), 2.4), image / 12.92)
+
+    # Convert from sRGB to Linear RGB
+    lin_rgb = rgb_to_linear_rgb(image)
+
+    xyz_im = rgb_to_xyz(lin_rgb)
+
+    # normalize for D65 white point
+    xyz_ref_white = torch.tensor([0.95047, 1.0, 1.08883], device=xyz_im.device, dtype=xyz_im.dtype)[..., :, None, None]
+    xyz_normalized = torch.div(xyz_im, xyz_ref_white)
+
+    threshold = 0.008856
+    power = torch.pow(xyz_normalized.clamp(min=threshold), 1 / 3.0)
+    scale = 7.787 * xyz_normalized + 4.0 / 29.0
+    xyz_int = torch.where(xyz_normalized > threshold, power, scale)
+
+    x, y, z = xyz_int.unbind(dim = -3)
+
+    L = (116.0 * y) - 16.0
+    a = 500.0 * (x - y)
+    b = 200.0 * (y - z)
+
+    return torch.stack([L, a, b], dim=-3)
+
+def rgb_to_grayscale(image, rgb_weights = [0.299, 0.587, 0.114]):
+    # https://github.com/kornia/kornia/blob/master/kornia/color/gray.py
+    r, g, b = image.unbind(dim = -3)
+    return rgb_weights[0] * r + rgb_weights[1] * g + rgb_weights[2] * b
+
+def image_scharr_gradients(img : 'BCHW', mode = None) -> 'BC2HW':
     flipped_scharr_x = torch.tensor([
         [-3, 0, 3 ],
         [10, 0, 10],
         [-3, 0, 3 ]
-    ])
+    ], dtype = img.dtype, device = img.device)
+
     kernel = torch.stack([flipped_scharr_x, flipped_scharr_x.t()]).unsqueeze(1)
-    components = F.conv2d(img.flatten(end_dim = -3).unsqueeze(1), kernel).unflatten(0, img.shape[:-2])
+    components = F.conv2d(img.flatten(end_dim = -3).unsqueeze(1), kernel, padding = 1).unflatten(0, img.shape[:-2])
     
     dx, dy = components.unbind(dim = -3)
     magnitude = lambda dx, dy: (dy ** 2 + dx ** 2) ** 0.5
@@ -53,47 +128,49 @@ def bbox_wh(xywh):
 def bbox_size(xywh):
     return int(xywh[-2]) * int(xywh[-1])
 
-def bbox_merge(xywh1, xywh2):
-    boxPoints = lambda x, y, w, h: [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)]
-    points = boxPoints(*xywh1) + boxPoints(*xywh2)
-    x1 = min(x1 for x1, y1, x2, y2 in points)
-    y1 = min(y1 for x1, y1, x2, y2 in points)
-    x2 = max(x2 for x1, y1, x2, y2 in points)
-    y2 = max(y2 for x1, y1, x2, y2 in points)
+def boundingRect(points):
+    x1, y1 = min(x for x, y in points), min(y for x, y in points)
+    x2, y2 = max(x for x, y in points), max(y for x, y in points)
     return (x1, y1, x2 - x1, y2 - y1)
 
-def cvtColor(img_rgb, mode):
-    return torch.as_tensor(cv2.cvtColor(img_rgb.movedim(-3, -1).numpy(), getattr(cv2, mode))).movedim(-3, -1) 
+def bbox_merge(xywh1, xywh2):
+    boxPoints = lambda x, y, w, h: [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)]
+    return boundingRect(boxPoints(*xywh1) + boxPoints(*xywh2))
+
+def normalize_min_max(x, dim):
+    hmin, hmax = x.amin(dim = dim, keepdim = True), x.amax(dim = dim, keepdim = True)
+    return (x - hmin) / (hmax - hmin) 
+
+def rotated_xywh(img_height, img_width, angle = 45.0, scale = 1.0):
+    # https://docs.opencv.org/4.5.3/da/d54/group__imgproc__transform.html#gafbbc470ce83812914a70abfb604f4326
+    
+    center = (img_width / 2.0, img_height / 2.0)
+    alpha, beta = scale * math.cos(math.radians(angle)), scale * math.sin(math.radians(angle))
+    rot = torch.tensor([
+            [alpha, beta, (1 - alpha) * center[0] - beta * center[1]],
+            [-beta, alpha, beta * center[0] + (1 - alpha) * center[1]]
+        ])
+    rotate = lambda point: (rot @ torch.tensor((point[0], point[1], 1.0), dtype = torch.float32)).tolist()[:2]
+
+    points = [(0, 0), (img_width - 1, 0), (0, img_height - 1), (img_width - 1, img_height - 1)]
+    
+    return boundingRect(list(map(rotate, points)))
 
 def image_gaussian_derivatives(img):
+    img_height, img_width = img.shape[-2:]
+    
     img_gradients = image_scharr_gradients(img.unsqueeze(0)).squeeze(0)
     
-    img_height, img_width = img.shape[-2:]
-    center1 = (img_width / 2.0, img_height / 2.0)
-    rot1 = cv2.getRotationMatrix2D(center1, 45.0, 1.0)
-    xywh1 = cv2.boundingRect(cv2.boxPoints((center1, (img_width, img_height), 45.0)))
-    rot1[0, 2] += xywh1[-2] / 2.0 - center1[0]
-    rot1[1, 2] += xywh1[-1] / 2.0 - center1[1]
-    startx1, starty1 = int(max(0, (xywh1[-2] - img_width) / 2)), int(max(0, (xywh1[-1] - img_height) / 2))
+    xywh = rotated_xywh(img_height, img_width, 45.0)
+    startx, starty = int(max(0, (xywh[-2] - img_width) / 2)), int(max(0, (xywh[-1] - img_height) / 2))
     
-    img_rotated = cv2.warpAffine(img, rot1, bbox_wh(xywh1))
-    #img_rotated = TF.rotate(img, 45.0, expand = True) 
-
-    center2 = (int(img_plane_rotated.shape[-1] / 2.0), int(img_plane_rotated.shape[-2] / 2.0))
-    rot2 = cv2.getRotationMatrix2D(center2, -45.0, 1.0)
-    xywh2 = cv2.boundingRect(cv2.boxPoints((center2, (img_rotated.shape[-1], img_rotated.shape[-2]), -45.0)))
-
-
+    img_rotated = TF.rotate(img, 45.0, expand = True) 
     img_rotated_gradients = image_scharr_gradients(img_rotated.unsqueeze(0)).squeeze(0)
+    img_rotated_gradients = TF.rotate(img_rotated_gradients, -45.0, expand = True)
 
-    img_rotated_gradients = cv2.warpAffine(img_rotated_gradients, rot2, bbox_wh(xywh2))
+    img_rotated_gradients = img_rotated_gradients[..., starty : starty + img_height, startx : startx + img_width]
     
-    # img_rotated_gradients = TF.rotate(img_rotated_gradients, -45, expand = True)
-
-    img_rotated_gradients = img_rotated_gradients[starty1 : starty1 + img_height, startx1 : startx1 + img_width]
-
-    
-    img_gaussians = torch.stack([thresholded for img_plane, img_plane_rotated in zip(img.unbind(-3), img_rotated.unbind(-3)) for tmp_gradient in img_gradients + img_rotated_gradients for thresholded in [img.clamp(min = 0), img.clamp(max = 0)]], dim = -3)
+    img_gaussians = torch.stack([thresholded for grad in torch.cat([img_gradients, img_rotated_gradients], dim = -3).flatten(end_dim = -3) for thresholded in [grad.clamp(min = 0), grad.clamp(max = 0)]], dim = -3)
 
     return img_gaussians
 
@@ -109,22 +186,24 @@ def build_segment_graph(reg_lab):
                 graph_adj[pr[j - 1], p[j]] = graph_adj[p[j], pr[j - 1]] = True
     return graph_adj
 
-def selective_search(img, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
-    hsv, lab, gray = [cvtColor(img, mode) for mode in ['COLOR_RGB2HSV', 'COLOR_RGB2Lab', 'COLOR_RGB2GRAY']]
+def selective_search(img : '3HW', base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
+    assert img.is_floating_point() and (0.0 <= img).all() and (img <= 1.0).all()
+
+    hsv, lab, gray = rgb_to_hsv(img.unsqueeze(0)).squeeze(0), rgb_to_lab(img.unsqueeze(0)).squeeze(0), rgb_to_grayscale(img.unsqueeze(0)).squeeze(0)
     
     if fast:
         images = [hsv, lab]
         segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 2, inc_k)]
         strategies = lambda features: [RegionSimilarity(features, [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size])]
     else:
-        images = [hsv, lab, gray[..., None], hsv[..., :1], torch.stack([img_bgr[..., 2], img_bgr[..., 1], gray], axis = -1)]
+        images = [hsv, lab, gray[..., None], hsv[..., :1], torch.stack([img[..., 0], img[..., 1], gray], axis = -1)]
         segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 4, inc_k)]
         strategies = lambda features: [RegionSimilarity(features, [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Size])]
             
     all_regs = []
     for img in images:
         for gs in segmentations:
-            reg_lab = torch.as_tensor(gs.processImage(img.numpy()), dtype = torch.int64)
+            reg_lab = torch.as_tensor(gs.processImage(img.movedim(-3, -1)[..., [2, 1, 0]].numpy()))
             graph_adj = build_segment_graph(reg_lab)
             features = HandcraftedRegionFeatures(img, reg_lab, len(graph_adj))
             all_regs.extend(reg for strategy in strategies(features) for reg in hierarchical_grouping(strategy, graph_adj, features.xywh))
@@ -170,7 +249,7 @@ class HandcraftedRegionFeatures:
         img_channels, img_height, img_width = img.shape[-3:]
         self.img_size = img_height * img_width
         
-        self.xywh = torch.tensor([[img_wdith, img_height, 0, 0]], dtype = torch.int64).repeat(nb_segs, 1)
+        self.xywh = torch.tensor([[img_width, img_height, 0, 0]], dtype = torch.int64).repeat(nb_segs, 1)
         for y in range(reg_lab.shape[-2]):
             for x in range(reg_lab.shape[-1]):
                 xywh = self.xywh[reg_lab[y, x]]
@@ -181,17 +260,18 @@ class HandcraftedRegionFeatures:
         self.xywh[..., 2] -= self.xywh[..., 0]
         self.xywh[..., 3] -= self.xywh[..., 1]
         
-        Z = reg_lab
-        self.region_sizes = torch.zeros((nb_segs, ), dtype = torch.float32).scatter_(-1, Z.flatten(start_dim = -2), 1, reduce = 'add')
+        reg_lab = reg_lab.to(torch.int64)
+        ones_like_expand = lambda tensor: torch.ones(1, device = tensor.device, dtype = torch.float32).expand_as(tensor)
         
-        Z = reg_lab * color_histogram_bins_size + (img / (256.0 / color_histogram_bins_size).to(torch.int64)
-        self.color_histograms = torch.zeros((img_channels, nb_segs * color_histogram_bins_size), dtype = torch.float32).scatter_(-1, Z.flatten(start_dim = -2), 1, reduce = 'add').view(img_channels, nb_segs, -1).movedim(-2, -3)
+        Z = reg_lab.flatten(start_dim = -2)
+        self.region_sizes = torch.zeros((nb_segs, ), dtype = torch.float32).scatter_add_(0, Z, ones_like_expand(Z))
+        
+        Z = (reg_lab * color_histogram_bins_size + (img / (256.0 / color_histogram_bins_size)).to(torch.int64)).flatten(start_dim = -2)
+        self.color_histograms = torch.zeros((img_channels, nb_segs * color_histogram_bins_size), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).view(img_channels, nb_segs, -1).movedim(-2, -3)
         self.color_histograms /= self.color_histograms.sum(dim = (-2, -1), keepdim = True)
 
-        img_gaussians = image_gaussian_derivatives(img)
-        hmin, hmax = img_gaussians.amin(dim = (-2, -1), keepdim = True), img_gaussians.amax(dim = (-2, -1), keepdim = True)
-        Z = reg_lab * texture_histogram_bins_size + (((img_gaussians - hmin) / (hmax - hmin) * 255) / (256.0 / texture_histogram_bins_size)).to(torch.int64)
-        self.texture_histograms = torch.zeros((img_channels, 8, nb_segs * texture_histogram_bins_size), dtype = torch.float32).scatter_(-1, Z.flatten(start_dim = -2), 1, reduce = 'add').view(img_channels, 8, nb_segs, -1).movedim(-2, -5)
+        Z = (reg_lab * texture_histogram_bins_size + ((normalize_min_max(image_gaussian_derivatives(img), dim = (-2, -1)) * 255) / (256.0 / texture_histogram_bins_size)).to(torch.int64).flatten(start_dim = -2))
+        self.texture_histograms = torch.zeros((img_channels, 8, nb_segs * texture_histogram_bins_size), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).view(img_channels, 8, nb_segs, -1).movedim(-2, -5)
         self.texture_histograms /= self.texture_histograms.sum(dim = (-3, -2, -1), keepdim = True)
 
     def merge(self, r1, r2):
@@ -225,7 +305,7 @@ if __name__ == '__main__':
     img = cv2.imread(args.input_path)
 
     if not args.opencv:
-        boxes_xywh = selective_search(img, fast = args.fast)
+        boxes_xywh = selective_search(torch.as_tensor(img)[..., [2, 1, 0]].movedim(-1, -3) / 255.0, fast = args.fast)
     else:
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
         algo.setBaseImage(img)
