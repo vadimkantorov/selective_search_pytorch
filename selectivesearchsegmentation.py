@@ -170,7 +170,7 @@ def image_gaussian_derivatives(img):
 
     img_rotated_gradients = img_rotated_gradients[..., starty : starty + img_height, startx : startx + img_width]
     
-    img_gaussians = torch.stack([thresholded for grad in torch.cat([img_gradients, img_rotated_gradients], dim = -3).flatten(end_dim = -3) for thresholded in [grad.clamp(min = 0), grad.clamp(max = 0)]], dim = -3)
+    img_gaussians = torch.stack([thresholded for grad in torch.cat([img_gradients, img_rotated_gradients], dim = -3).flatten(end_dim = -3) for thresholded in [grad.clamp(min = 0), grad.clamp(max = 0)]], dim = -3).unflatten(-3, (img.shape[0], 8))
 
     return img_gaussians
 
@@ -217,7 +217,8 @@ def hierarchical_grouping(strategy, graph_adj, bbox, compute_rank = lambda regio
         regs.append(RegionNode(id = i, level = 1, merged_to = -1, bbox = bbox[i], rank = 0))
         for j in range(i + 1, len(bbox)):
             if graph_adj[i, j]:
-                PQ.append(Edge(fro = i, to = j, similarity = strategy(i, j), removed = False))
+                breakpoint()
+                PQ.append(Edge(fro = i, to = j, similarity = float(strategy(i, j)), removed = False))
     
     while PQ:
         PQ.sort(key = lambda sim: sim.similarity)
@@ -237,7 +238,7 @@ def hierarchical_grouping(strategy, graph_adj, bbox, compute_rank = lambda regio
                 e.removed = True
         PQ = [sim for sim in PQ if not sim.removed]
         for local_neighbour in local_neighbours:
-            PQ.append(Edge(fro = len(regs) - 1, to = local_neighbour, similarity = strategy(regs[len(regs) - 1].id, regs[local_neighbour].id), removed = False))
+            PQ.append(Edge(fro = len(regs) - 1, to = local_neighbour, similarity = float(strategy(regs[len(regs) - 1].id, regs[local_neighbour].id), removed = False)))
 
     for region in regs:
         region.rank = compute_rank(region)
@@ -270,8 +271,8 @@ class HandcraftedRegionFeatures:
         self.color_histograms = torch.zeros((img_channels, nb_segs * color_histogram_bins_size), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).view(img_channels, nb_segs, -1).movedim(-2, -3)
         self.color_histograms /= self.color_histograms.sum(dim = (-2, -1), keepdim = True)
 
-        Z = (reg_lab * texture_histogram_bins_size + ((normalize_min_max(image_gaussian_derivatives(img), dim = (-2, -1)) * 255) / (256.0 / texture_histogram_bins_size)).to(torch.int64).flatten(start_dim = -2))
-        self.texture_histograms = torch.zeros((img_channels, 8, nb_segs * texture_histogram_bins_size), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).view(img_channels, 8, nb_segs, -1).movedim(-2, -5)
+        Z = (reg_lab * texture_histogram_bins_size + ((normalize_min_max(image_gaussian_derivatives(img), dim = (-2, -1)) * 255) / (256.0 / texture_histogram_bins_size)).to(torch.int64)).flatten(start_dim = -2)
+        self.texture_histograms = torch.zeros((img_channels, 8, nb_segs * texture_histogram_bins_size), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).view(img_channels, 8, nb_segs, -1).movedim(-2, -4)
         self.texture_histograms /= self.texture_histograms.sum(dim = (-3, -2, -1), keepdim = True)
 
     def merge(self, r1, r2):
