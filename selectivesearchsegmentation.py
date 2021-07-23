@@ -217,6 +217,7 @@ class SelectiveSearch(nn.Module):
 
     @staticmethod
     def hierarchical_grouping(strategy, graph_adj, bbox, compute_rank = lambda region: region.level * random.random()):
+        # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
         regs, PQ = [], []
 
         for i in range(len(bbox)):
