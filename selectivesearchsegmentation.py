@@ -165,7 +165,14 @@ def image_gaussian_derivatives(img):
     return torch.cat([grads.clamp(min = 0), grads.clamp(max = 0), grads_rotated.clamp(min = 0), grads_rotated.clamp(max = 0)], dim = -3)
 
 class SelectiveSearch(nn.Module):
-    def forward(self, img : '3HW', base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
+    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
+        self.base_k = base_k
+        self.inc_k = inc_k
+        self.sigma = sigma
+        self.min_size = min_size
+        self.fast = fast
+
+    def forward(self, img : '3HW'):
         assert img.is_floating_point() and (0.0 <= img).all() and (img <= 1.0).all()
 
         hsv, lab, gray = rgb_to_hsv(img.unsqueeze(0)).squeeze(0), rgb_to_lab(img.unsqueeze(0)).squeeze(0), rgb_to_grayscale(img.unsqueeze(0)).squeeze(0)
@@ -174,14 +181,14 @@ class SelectiveSearch(nn.Module):
         lab[..., 1:, :, :] /= 256
         lab[..., 1:, :, :] += 0.5
 
-        if fast:
+        if self.fast:
             #images = [hsv, lab]
-            images = [hsv]
-            segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 2, inc_k)]
+            images = [lab]
+            segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
             strategies = lambda features: [RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size])]
         else:
             images = [hsv, lab, gray, hsv[..., :1, :, :], torch.cat([img[..., :2, :, :],  gray], dim = -3)]
-            segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(sigma, float(k), min_size) for k in range(base_k, 1 + base_k + inc_k * 4, inc_k)]
+            segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 4, self.inc_k)]
             strategies = lambda features: [RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Size])]
                 
         all_regs = []
@@ -223,9 +230,8 @@ class SelectiveSearch(nn.Module):
             u, v = e.fro, e.to
             
             reg_fro, reg_to = regs[u], regs[v]
-            regs.append(RegionNode(id = min(reg_fro.id, reg_to.id), level = 1 + max(reg_fro.level, reg_to.level), merged_to = -1, bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), rank = 0))
             regs[u].merged_to = regs[v].merged_to = len(regs) - 1
-            
+            regs.append(RegionNode(id = min(reg_fro.id, reg_to.id), level = 1 + max(reg_fro.level, reg_to.level), merged_to = -1, bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), rank = 0))
             strategy.features.merge(reg_fro.id, reg_to.id)
             
             local_neighbours = set()
@@ -233,6 +239,7 @@ class SelectiveSearch(nn.Module):
                 if (u == e.fro or u == e.to) or (v == e.fro or v == e.to):
                     local_neighbours.add(e.to if e.fro == u or e.fro == v else e.fro)
                     e.removed = True
+
             PQ = [sim for sim in PQ if not sim.removed]
             for local_neighbour in local_neighbours:
                 PQ.append(Edge(fro = len(regs) - 1, to = local_neighbour, similarity = float(strategy(regs[len(regs) - 1].id, regs[local_neighbour].id)), removed = False))
@@ -310,7 +317,8 @@ if __name__ == '__main__':
     img = cv2.imread(args.input_path)
 
     if not args.opencv:
-        boxes_xywh = selective_search(torch.as_tensor(img)[..., [2, 1, 0]].movedim(-1, -3) / 255.0, fast = args.fast)
+        algo = SelectiveSearch(fast = args.fast)
+        boxes_xywh = algo(torch.as_tensor(img)[..., [2, 1, 0]].movedim(-1, -3) / 255.0)
     else:
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
         algo.setBaseImage(img)
