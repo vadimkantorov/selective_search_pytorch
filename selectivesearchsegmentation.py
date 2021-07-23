@@ -26,14 +26,6 @@ class Edge:
     to : int
     removed : bool
 
-@dataclasses.dataclass
-class RegionSimilarity:
-    features : 'HandcraftedRegionFeatures'
-    strategies : list
-
-    def __call__(self, r1, r2):
-        return sum((1.0 / len(self.strategies)) * s(self.features, r1, r2) for i, s in enumerate(self.strategies)) 
-
 def rgb_to_hsv(image, eps: float = 1e-6):
     # https://github.com/kornia/kornia/blob/master/kornia/color/hsv.py
     maxc, _ = image.max(-3)
@@ -132,9 +124,9 @@ def bbox_merge(xywh1, xywh2):
     boxPoints = lambda x, y, w, h: [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)]
     return boundingRect(boxPoints(*xywh1) + boxPoints(*xywh2))
 
-def normalize_min_max(x, dim):
+def normalize_min_max(x, dim, eps = 0):
     hmin, hmax = x.amin(dim = dim, keepdim = True), x.amax(dim = dim, keepdim = True)
-    return (x - hmin) / (hmax - hmin) 
+    return (x - hmin) / (eps + hmax - hmin) 
 
 def rotated_xywh(img_height, img_width, angle = 45.0, scale = 1.0):
     # https://docs.opencv.org/4.5.3/da/d54/group__imgproc__transform.html#gafbbc470ce83812914a70abfb604f4326
@@ -194,7 +186,7 @@ class SelectiveSearch(nn.Module):
         for imgs in self.images(img, hsv, lab, gray):
             for gs in self.segmentations:
                 for img, regs in zip(imgs, all_regs):
-                    reg_lab = torch.as_tensor(gs.processImage(img.movedim(-3, -1)[..., [2, 1, 0]].numpy())) # 0-255? 0-1?
+                    reg_lab = torch.as_tensor(gs.processImage(img.movedim(-3, -1)[..., [2, 1, 0]].numpy())) # rgb? bgr? 0-255? 0-1?
                     graph_adj = self.build_segment_graph(reg_lab)
                     features = HandcraftedRegionFeatures(img, reg_lab, len(graph_adj))
                     regs.extend(reg for strategy in self.strategies(features) for reg in self.hierarchical_grouping(strategy, graph_adj, features.xywh))
@@ -301,6 +293,14 @@ class HandcraftedRegionFeatures:
 
     def Texture(self, r1, r2):
         return torch.min(self.texture_histograms[r1], self.texture_histograms[r2]).sum(dim = (-3, -2, -1))
+
+@dataclasses.dataclass
+class RegionSimilarity:
+    features : HandcraftedRegionFeatures
+    strategies : list
+
+    def __call__(self, r1, r2):
+        return sum((1.0 / len(self.strategies)) * s(self.features, r1, r2) for i, s in enumerate(self.strategies)) 
 
 if __name__ == '__main__':
     import argparse
