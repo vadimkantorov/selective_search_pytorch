@@ -166,6 +166,7 @@ def image_gaussian_derivatives(img):
 
 class SelectiveSearch(nn.Module):
     def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
+        super().__init__()
         self.base_k = base_k
         self.inc_k = inc_k
         self.sigma = sigma
@@ -183,12 +184,12 @@ class SelectiveSearch(nn.Module):
 
         if self.fast:
             #images = [hsv, lab]
-            images = [lab]
-            segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
+            images = [hsv]
+            segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
             strategies = lambda features: [RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size])]
         else:
             images = [hsv, lab, gray, hsv[..., :1, :, :], torch.cat([img[..., :2, :, :],  gray], dim = -3)]
-            segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 4, self.inc_k)]
+            segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 4, self.inc_k)]
             strategies = lambda features: [RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Size])]
                 
         all_regs = []
@@ -239,8 +240,8 @@ class SelectiveSearch(nn.Module):
                 if (u == e.fro or u == e.to) or (v == e.fro or v == e.to):
                     local_neighbours.add(e.to if e.fro == u or e.fro == v else e.fro)
                     e.removed = True
-
             PQ = [sim for sim in PQ if not sim.removed]
+
             for local_neighbour in local_neighbours:
                 PQ.append(Edge(fro = len(regs) - 1, to = local_neighbour, similarity = float(strategy(regs[len(regs) - 1].id, regs[local_neighbour].id)), removed = False))
 
