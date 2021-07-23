@@ -173,34 +173,33 @@ class SelectiveSearch(nn.Module):
         self.min_size = min_size
         self.fast = fast
 
-    def forward(self, img : '3HW'):
-        assert img.is_floating_point() and (0.0 <= img).all() and (img <= 1.0).all()
+        if self.fast:
+            self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
+            self.strategies = lambda features: [RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size])]
+            self.images = lambda img, hsv, lab, gray: [hsv]
+        
+        else:
+            self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 4, self.inc_k)]
+            self.strategies = lambda features: [RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Size])]
+            self.images = lambda img, hsv, lab, gray: [hsv, lab, gray, hsv[..., :1, :, :], torch.cat([img[..., :2, :, :],  gray], dim = -3)]
 
-        hsv, lab, gray = rgb_to_hsv(img.unsqueeze(0)).squeeze(0), rgb_to_lab(img.unsqueeze(0)).squeeze(0), rgb_to_grayscale(img.unsqueeze(0)).squeeze(0)
+    def forward(self, img):
+        hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
         hsv[..., 0, :, :] /= 2 * math.pi
         lab[..., 0, :, :] /= 100
         lab[..., 1:, :, :] /= 256
         lab[..., 1:, :, :] += 0.5
-
-        if self.fast:
-            #images = [hsv, lab]
-            images = [hsv]
-            segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
-            strategies = lambda features: [RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size])]
-        else:
-            images = [hsv, lab, gray, hsv[..., :1, :, :], torch.cat([img[..., :2, :, :],  gray], dim = -3)]
-            segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 4, self.inc_k)]
-            strategies = lambda features: [RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Fill]), RegionSimilarity(copy.deepcopy(features), [HandcraftedRegionFeatures.Size])]
                 
-        all_regs = []
-        for img in images:
-            for gs in segmentations:
-                reg_lab = torch.as_tensor(gs.processImage(img.movedim(-3, -1)[..., [2, 1, 0]].numpy()))
-                graph_adj = self.build_segment_graph(reg_lab)
-                features = HandcraftedRegionFeatures(img, reg_lab, len(graph_adj))
-                all_regs.extend(reg for strategy in strategies(features) for reg in self.hierarchical_grouping(strategy, graph_adj, features.xywh))
+        all_regs = [[] for i in range(len(img))]
+        for imgs in self.images(img, hsv, lab, gray):
+            for gs in self.segmentations:
+                for img, regs in zip(imgs, all_regs):
+                    reg_lab = torch.as_tensor(gs.processImage(img.movedim(-3, -1)[..., [2, 1, 0]].numpy())) # 0-255? 0-1?
+                    graph_adj = self.build_segment_graph(reg_lab)
+                    features = HandcraftedRegionFeatures(img, reg_lab, len(graph_adj))
+                    regs.extend(reg for strategy in self.strategies(features) for reg in self.hierarchical_grouping(strategy, graph_adj, features.xywh))
         
-        return list({reg.bbox : True for reg in sorted(all_regs, key = lambda r: r.rank)}.keys())
+        return [list({reg.bbox : True for reg in sorted(regs, key = lambda r: r.rank)}.keys()) for regs in all_regs]
     
     @staticmethod
     def build_segment_graph(reg_lab):
@@ -319,7 +318,7 @@ if __name__ == '__main__':
 
     if not args.opencv:
         algo = SelectiveSearch(fast = args.fast)
-        boxes_xywh = algo(torch.as_tensor(img)[..., [2, 1, 0]].movedim(-1, -3) / 255.0)
+        boxes_xywh = algo(torch.as_tensor(img)[..., [2, 1, 0]].movedim(-1, -3).unsqueeze(0) / 255.0)[0]
     else:
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
         algo.setBaseImage(img)
