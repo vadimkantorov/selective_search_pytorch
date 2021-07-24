@@ -94,21 +94,17 @@ def image_scharr_gradients(img : 'BCHW') -> 'BC2HW':
     kernel = torch.stack([flipped_scharr_x, flipped_scharr_x.t()]).unsqueeze(1)
     return F.conv2d(img.flatten(end_dim = -3).unsqueeze(1), kernel, padding = 1).unflatten(0, img.shape[:-2])
 
-def bounding_rect(points):
+def bbox(points):
     x1, y1 = min(x for x, y in points), min(y for x, y in points)
     x2, y2 = max(x for x, y in points), max(y for x, y in points)
     return [x1, y1, x2 - x1, y2 - y1]
 
 def bbox_merge(xywh1, xywh2):
     boxPoints = lambda x, y, w, h: [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)]
-    return bounding_rect(boxPoints(*xywh1) + boxPoints(*xywh2))
+    return bbox(boxPoints(*xywh1) + boxPoints(*xywh2))
 
 def bbox_size(xywh):
     return int(xywh[-2]) * int(xywh[-1])
-
-def normalize_min_max(x, dim, eps = 0):
-    hmin, hmax = x.amin(dim = dim, keepdim = True), x.amax(dim = dim, keepdim = True)
-    return (x - hmin) / (eps + hmax - hmin) 
 
 def rotated_xywh(img_height, img_width, angle = 45.0, scale = 1.0):
     # https://docs.opencv.org/4.5.3/da/d54/group__imgproc__transform.html#gafbbc470ce83812914a70abfb604f4326
@@ -123,7 +119,7 @@ def rotated_xywh(img_height, img_width, angle = 45.0, scale = 1.0):
 
     points = [(0, 0), (img_width - 1, 0), (0, img_height - 1), (img_width - 1, img_height - 1)]
     
-    return bounding_rect(list(map(rotate, points)))
+    return bbox(list(map(rotate, points)))
 
 def image_gaussian_derivatives(img):
     grads = image_scharr_gradients(img)
@@ -138,14 +134,11 @@ def image_gaussian_derivatives(img):
 
     return torch.cat([grads.clamp(min = 0), grads.clamp(max = 0), grads_rotated.clamp(min = 0), grads_rotated.clamp(max = 0)], dim = -3)
 
+def normalize_min_max(x, dim, eps = 0):
+    hmin, hmax = x.amin(dim = dim, keepdim = True), x.amax(dim = dim, keepdim = True)
+    return (x - hmin) / (eps + hmax - hmin) 
+
 class SelectiveSearch(nn.Module):
-    @dataclasses.dataclass(order = True)
-    class RegionNode:
-        rank : float
-        id : int
-        level : int
-        merged_to : int
-        bbox : list
 
     def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
         super().__init__()
@@ -178,35 +171,41 @@ class SelectiveSearch(nn.Module):
         
         features = HandcraftedRegionFeatures(img, reg_labs)
         
-        img_idx = torch.arange(len(reg_labs))[:, None, None].expand(reg_labs.shape[:-2]).flatten().tolist()
+        graph_adj = self.build_segment_graph(reg_lab)
         
-        all_regs = [[] for i in range(len(img))]
-        for b, reg_lab in zip(img_idx, reg_labs.flatten(end_dim = -3)):
-            graph_adj = self.build_segment_graph(reg_lab)
-            all_regs[b].extend(reg for strategy in self.strategies for reg in self.hierarchical_grouping(copy.deepcopy(features), strategy, graph_adj))
+        all_regs = []
+        for strategy in self.strategies:
+            all_regs.extend(self.hierarchical_grouping(copy.deepcopy(features), strategy, graph_adj))
         
         return [list({reg.bbox : True for reg in sorted(regs, key = lambda r: r.rank)}.keys()) for regs in all_regs]
     
     @staticmethod
-    def build_segment_graph(reg_lab):
+    def build_segment_graph(reg_lab : 'BIGHW'):
         num_segments = 1 + int(reg_lab.max())
-        graph_adj = torch.zeros((num_segments, num_segments), dtype = torch.bool)
-        for i in range(reg_lab.shape[0]):
-            p, pr = reg_lab[i], (reg_lab[i - 1] if i > 0 else None)
-            for j in range(reg_lab.shape[1]): 
-                if i > 0 and j > 0:
-                    graph_adj[p [j - 1], p[j]] = graph_adj[p[j], p [j - 1]] = True
-                    graph_adj[pr[j    ], p[j]] = graph_adj[p[j], pr[j    ]] = True
-                    graph_adj[pr[j - 1], p[j]] = graph_adj[p[j], pr[j - 1]] = True
+        graph_adj = torch.zeros((reg_lab.shape[0], reg_lab.shape[1], reg_lab.shape[2], num_segments, num_segments), dtype = torch.bool)
+        for b in range(reg_lab.shape[0]):
+            for i in range(reg_lab.shape[1]):
+                for g in range(reg_lab.shape[2]):
+                    for y in range(reg_lab.shape[3]):
+                        p, pr = reg_lab[b, i, g, y], (reg_lab[b, i, g, y - 1] if y > 0 else None)
+                        for x in range(reg_lab.shape[4]):
+                            if y > 0 and x > 0:
+                                graph_adj[p [x - 1], p[x]] = graph_adj[p[x], p [x - 1]] = True
+                                graph_adj[pr[x    ], p[x]] = graph_adj[p[x], pr[x    ]] = True
+                                graph_adj[pr[x - 1], p[x]] = graph_adj[p[x], pr[x - 1]] = True
         return graph_adj
 
     @staticmethod
     def hierarchical_grouping(features, strategy, graph_adj, compute_rank = lambda region: region.level * random.random()):
         # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
+        
+        @dataclasses.dataclass(order = True)
+        class RegionNode: rank : float; id : int; level : int; merged_to : int; bbox : list
+        
         regs, PQ = [], []
 
         for i in range(len(bbox)):
-            regs.append(SelectiveSearch.RegionNode(id = i, level = 1, merged_to = -1, bbox = features.xywh[i].tolist(), rank = 0))
+            regs.append(RegionNode(id = i, level = 1, merged_to = -1, bbox = features.xywh[i].tolist(), rank = 0))
             for j in range(i + 1, len(bbox)):
                 if graph_adj[i, j]:
                     PQ.append((-float(features.compute_region_similarity(i, j, strategy)), i, j))
@@ -222,7 +221,7 @@ class SelectiveSearch(nn.Module):
             assert reg_fro.id == u and reg_to.id == v
             w = len(regs)
             regs[u].merged_to = regs[v].merged_to = w
-            regs.append(SelectiveSearch.RegionNode(id = min(reg_fro.id, reg_to.id), level = 1 + max(reg_fro.level, reg_to.level), merged_to = -1, bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), rank = 0))
+            regs.append(RegionNode(id = min(reg_fro.id, reg_to.id), level = 1 + max(reg_fro.level, reg_to.level), merged_to = -1, bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), rank = 0))
             features.merge_regions(reg_fro.id, reg_to.id)
             
             visited.update([u, v])
