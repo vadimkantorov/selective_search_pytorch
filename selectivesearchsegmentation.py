@@ -232,7 +232,7 @@ class SelectiveSearch(nn.Module):
                 if (u == e.fro or u == e.to) or (v == e.fro or v == e.to):
                     local_neighbours.add(e.to if e.fro == u or e.fro == v else e.fro)
                     e.removed = True
-            PQ = [sim for sim in PQ if not sim.removed]
+            PQ = [e for e in PQ if not e.removed]
 
             for local_neighbour in local_neighbours:
                 PQ.append(Edge(fro = len(regs) - 1, to = local_neighbour, similarity = float(strategy(regs[len(regs) - 1].id, regs[local_neighbour].id)), removed = False))
