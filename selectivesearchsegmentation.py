@@ -2,6 +2,7 @@ import math
 import copy
 import heapq
 import random
+import itertools
 import dataclasses
 
 import cv2.ximgproc.segmentation
@@ -40,7 +41,6 @@ def rgb_to_hsv(image, eps: float = 1e-6):
     h = 2 * math.pi * h
 
     return torch.stack([h, s, v], dim=-3)
-
 
 def rgb_to_lab(image):
     # https://github.com/kornia/kornia/blob/master/kornia/color/lab.py
@@ -90,14 +90,13 @@ def image_scharr_gradients(img : 'BCHW') -> 'BC2HW':
         [10, 0, 10],
         [-3, 0, 3 ]
     ], dtype = img.dtype, device = img.device)
-
     kernel = torch.stack([flipped_scharr_x, flipped_scharr_x.t()]).unsqueeze(1)
     return F.conv2d(img.flatten(end_dim = -3).unsqueeze(1), kernel, padding = 1).unflatten(0, img.shape[:-2])
 
 def bbox(points):
     x1, y1 = min(x for x, y in points), min(y for x, y in points)
     x2, y2 = max(x for x, y in points), max(y for x, y in points)
-    return [x1, y1, x2 - x1, y2 - y1]
+    return (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
 
 def bbox_merge(xywh1, xywh2):
     boxPoints = lambda x, y, w, h: [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)]
@@ -139,7 +138,8 @@ def normalize_min_max(x, dim, eps = 0):
     return (x - hmin) / (eps + hmax - hmin) 
 
 class SelectiveSearch(nn.Module):
-
+    # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
+        
     def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
         super().__init__()
         self.base_k = base_k
@@ -147,6 +147,11 @@ class SelectiveSearch(nn.Module):
         self.sigma = sigma
         self.min_size = min_size
         self.fast = fast
+        
+        #int k = 200, float sigma = 0.8)
+        #cvtColor(base_image, hsv, COLOR_BGR2HSV);
+        #Ptr<GraphSegmentation> gs = createGraphSegmentation(((float)k, sigma);
+        #color, fill, texture, size
 
         if self.fast:
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
@@ -158,79 +163,87 @@ class SelectiveSearch(nn.Module):
             self.strategies = [[HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color], [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size], [HandcraftedRegionFeatures.Fill], [HandcraftedRegionFeatures.Size]]
             self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv, lab, gray.expand_as(hsv), hsv[..., :1, :, :].expand_as(hsv), torch.cat([rgb[..., :2, :, :],  gray], dim = -3)], dim = -4)
 
+    @staticmethod
+    def get_region_mask(reg_lab, region):
+        return (reg_lab[region.plane_id][..., None] == torch.tensor(list(region.ids), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1)
+
     def forward(self, img):
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
-        hsv[..., 0, :, :] /= 2 * math.pi
-        lab[..., 0, :, :] /= 100
-        lab[..., 1:, :, :] /= 256
-        lab[..., 1:, :, :] += 0.5
-                
+        hsv[..., 0, :, :] /= 2.0 * math.pi 
+        hsv *= 255.0
+        #lab[..., 0, :, :] *= 255.0/100.0
+        #gray *= 255.0
+        #img *= 255.0
+    
         imgs = self.images(img, hsv, lab, gray)
         
-        reg_labs = torch.stack([torch.as_tensor(gs.processImage(img.movedim(-3, -1).numpy())) for img in imgs.flatten(end_dim = -4) for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),))
+        reg_lab = torch.stack([torch.as_tensor(gs.processImage(img.movedim(-3, -1).numpy())) for img in imgs.flatten(end_dim = -4) for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),))
         
-        features = HandcraftedRegionFeatures(img, reg_labs)
+        features = HandcraftedRegionFeatures(img, reg_lab)
         
-        graph_adj = self.build_segment_graph(reg_lab)
+        graph_adj = self.build_graph(reg_lab, max_num_segments = features.max_num_segments)
         
-        all_regs = []
-        for strategy in self.strategies:
-            all_regs.extend(self.hierarchical_grouping(copy.deepcopy(features), strategy, graph_adj))
+        all_regs = [reg for strategy in self.strategies for reg in self.hierarchical_grouping(copy.deepcopy(features), strategy, graph_adj)]
         
-        return [list({reg.bbox : True for reg in sorted(regs, key = lambda r: r.rank)}.keys()) for regs in all_regs]
+        key_img_id, key_rank = (lambda reg: reg.img_id), (lambda reg: reg.rank)
+        by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted(all_regs, key = key_img_id), key = key_img_id)}
+        
+        without_duplicates = [{reg.bbox : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
+        return [list(without_duplicates[b].keys()) for b in range(len(img))], [[by_image[b][i] for i in without_duplicates[b].values()] for b in range(len(img))], reg_lab
     
     @staticmethod
-    def build_segment_graph(reg_lab : 'BIGHW'):
-        num_segments = 1 + int(reg_lab.max())
-        graph_adj = torch.zeros((reg_lab.shape[0], reg_lab.shape[1], reg_lab.shape[2], num_segments, num_segments), dtype = torch.bool)
-        for b in range(reg_lab.shape[0]):
-            for i in range(reg_lab.shape[1]):
-                for g in range(reg_lab.shape[2]):
-                    for y in range(reg_lab.shape[3]):
-                        p, pr = reg_lab[b, i, g, y], (reg_lab[b, i, g, y - 1] if y > 0 else None)
-                        for x in range(reg_lab.shape[4]):
-                            if y > 0 and x > 0:
-                                graph_adj[p [x - 1], p[x]] = graph_adj[p[x], p [x - 1]] = True
-                                graph_adj[pr[x    ], p[x]] = graph_adj[p[x], pr[x    ]] = True
-                                graph_adj[pr[x - 1], p[x]] = graph_adj[p[x], pr[x - 1]] = True
-        return graph_adj
+    def build_graph(reg_lab : 'BIGHW', max_num_segments : int):
+        I = torch.stack(torch.meshgrid(*[torch.arange(s) for s in reg_lab.shape[:3]]), dim = -1)[..., None, None]
+        DX = torch.stack([reg_lab[..., :, :-1], reg_lab[..., :, 1:]], dim = -1).movedim(-1, -3)
+        DY = torch.stack([reg_lab[..., :-1, :], reg_lab[..., 1:, :]], dim = -1).movedim(-1, -3)
+        dx = torch.cat([I.expand(-1, -1, -1, -1, *DX.shape[-2:]), DX], dim = -3).flatten(start_dim = -2)
+        dy = torch.cat([I.expand(-1, -1, -1, -1, *DY.shape[-2:]), DY], dim = -3).flatten(start_dim = -2)
+        i = torch.cat([dx, dy], dim = -1).movedim(-2, 0).flatten(start_dim = 1)
+        v = torch.ones(i.shape[1], dtype = torch.bool)
+        return torch.sparse_coo_tensor(i, v, reg_lab.shape[:3] + (max_num_segments, max_num_segments), dtype = torch.int64).coalesce().to(torch.bool).to_dense()
 
     @staticmethod
     def hierarchical_grouping(features, strategy, graph_adj, compute_rank = lambda region: region.level * random.random()):
-        # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
         
         @dataclasses.dataclass(order = True)
-        class RegionNode: rank : float; id : int; level : int; merged_to : int; bbox : list
+        class RegionNode: rank : float; id : int; level : int; parent_id : int; bbox : tuple; plane_id: tuple; img_id: int; ids : set;
         
         regs, PQ = [], []
 
-        for i in range(len(bbox)):
-            regs.append(RegionNode(id = i, level = 1, merged_to = -1, bbox = features.xywh[i].tolist(), rank = 0))
-            for j in range(i + 1, len(bbox)):
-                if graph_adj[i, j]:
-                    PQ.append((-float(features.compute_region_similarity(i, j, strategy)), i, j))
-        
+        for b in range(graph_adj.shape[0]):
+            for i in range(graph_adj.shape[1]):
+                for g in range(graph_adj.shape[2]):
+                    r0 = len(regs)
+                    num_segments = int(features.num_segments[b, i, g])
+                    for r1 in range(num_segments):
+                        regs.append(RegionNode(id = r1, img_id = b, plane_id = (b, i, g), level = 1, bbox = tuple(features.xywh[b, i, g, r1].tolist()), ids = {r1}, parent_id = -1, rank = 0))
+
+                        for r2 in range(r1 + 1, num_segments):
+                            u, v = r0 + r1, r0 + r2
+                            if graph_adj[b, i, g, r1, r2]:
+                                PQ.append((-float(features.compute_region_similarity((b, i, g, r1), (b, i, g, r2), strategy)), u, v))
+
         visited = set()
-        PQ = heapq.heapify(PQ)
+        heapq.heapify(PQ)
         while PQ:
-            negsimilarity, u, v = heapq.heappop(PQ)
+            negsim, u, v = heapq.heappop(PQ)
             if u in visited or v in visited:
                 continue
             
+            ww = len(regs)
             reg_fro, reg_to = regs[u], regs[v]
-            assert reg_fro.id == u and reg_to.id == v
-            w = len(regs)
-            regs[u].merged_to = regs[v].merged_to = w
-            regs.append(RegionNode(id = min(reg_fro.id, reg_to.id), level = 1 + max(reg_fro.level, reg_to.level), merged_to = -1, bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), rank = 0))
-            features.merge_regions(reg_fro.id, reg_to.id)
+            b, i, g = reg_fro.plane_id
+            regs[u].parent_id = regs[v].parent_id = ww
+            regs.append(RegionNode(id = min(reg_fro.id, reg_to.id), img_id = reg_fro.img_id, plane_id = reg_fro.plane_id, level = 1 + max(reg_fro.level, reg_to.level), bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), ids = reg_fro.ids | reg_to.ids, parent_id = -1, rank = 0))
+            features.merge_regions((b, i, g, reg_fro.id), (b, i, g, reg_to.id))
             
             visited.update([u, v])
             
-            for e in PQ:
-                if (u == e.fro or u == e.to) or (v == e.fro or v == e.to):
-                    vv = e.to if e.fro == u or e.fro == v else e.fro
+            for _, fro, to in PQ:
+                if (u == fro or u == to) or (v == fro or v == to):
+                    vv = to if fro == u or fro == v else fro
                     if vv not in visited:
-                        heapq.heappush(PQ, (-float(features.compute_region_similarity(regs[w].id, regs[vv].id, strategy)), w, vv))
+                        heapq.heappush(PQ, (-float(features.compute_region_similarity((b, i, g, regs[ww].id), (b, i, g, regs[vv].id), strategy)), ww, vv))
 
         for region in regs:
             region.rank = compute_rank(region)
@@ -238,42 +251,35 @@ class SelectiveSearch(nn.Module):
         return regs
 
 class HandcraftedRegionFeatures:
-    def __init__(self, img : 'B3HW', reg_lab : 'BIGHW', color_histogram_bins = 25, texture_histogram_bins = 10):
+    def __init__(self, img : 'B3HW', reg_lab : 'BIGHW', color_histogram_bins = 25, texture_histogram_bins = 10, neginf = -int(1e9), posinf = int(1e9)):
         ones_like_expand = lambda tensor: torch.ones(1, device = tensor.device, dtype = torch.float32).expand_as(tensor)
         
         img_channels, img_height, img_width = img.shape[-3:]
         self.img_size = img_height * img_width
+        self.num_segments = 1 + reg_lab.amax(dim = (-2, -1))
+        self.max_num_segments = int(self.num_segments.amax())
 
         img_normalized_gaussian_derivatives = normalize_min_max(image_gaussian_derivatives(img), dim = (-2, -1))
-        num_segments = 1 + int(reg_lab.max())
         
         Z = reg_lab.flatten(start_dim = -2).to(torch.int64)
-        self.region_sizes = torch.zeros((reg_lab.shape[0], reg_lab.shape[1], reg_lab.shape[2], num_segments), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z))
+        self.region_sizes = torch.zeros(reg_lab.shape[:3] + (self.max_num_segments, ), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z))
         
-        Z = (reg_lab[..., None, :, :] * color_histogram_bins + img[:, None, None].mul(color_histogram_bins - 1)).flatten(start_dim = -2).to(torch.int64)
-        self.color_histograms = torch.zeros((reg_lab.shape[0], reg_lab.shape[1], reg_lab.shape[2], img_channels, num_segments * color_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (num_segments, color_histogram_bins)).movedim(-2, -3)
+        Z = (reg_lab[..., None, :, :] * color_histogram_bins + img[:, None, None].mul((color_histogram_bins - 1) / 255.0)).flatten(start_dim = -2).to(torch.int64)
+        self.color_histograms = torch.zeros(reg_lab.shape[:3] + (img_channels, self.max_num_segments * color_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, color_histogram_bins)).movedim(-2, -3)
         self.color_histograms /= self.color_histograms.sum(dim = (-2, -1), keepdim = True)
 
         Z = (reg_lab[..., None, None, :, :] * texture_histogram_bins + img_normalized_gaussian_derivatives[:, None, None].mul(texture_histogram_bins - 1)).flatten(start_dim = -2).to(torch.int64)
-        self.texture_histograms = torch.zeros((reg_lab.shape[0], reg_lab.shape[1], reg_lab.shape[2], img_channels, 8, num_segments * texture_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (num_segments, texture_histogram_bins)).movedim(-2, -4)
+        self.texture_histograms = torch.zeros(reg_lab.shape[:3] + (img_channels, img_normalized_gaussian_derivatives.shape[-3], self.max_num_segments * texture_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, texture_histogram_bins)).movedim(-2, -4)
         self.texture_histograms /= self.texture_histograms.sum(dim = (-3, -2, -1), keepdim = True)
         
-        self.xywh = torch.tensor([[img_width, img_height, 0, 0]], dtype = torch.int64).repeat(reg_lab.shape[0], reg_lab.shape[1], reg_lab.shape[2], num_segments, 1)
-        for b in range(reg_lab.shape[0]):
-            for i in range(reg_lab.shape[1]):
-                for g in range(reg_lab.shape[2]):
-                    for y in range(reg_lab.shape[3]):
-                        for x in range(reg_lab.shape[4]):
-                            xywh = self.xywh[b, i, g, reg_lab[y, x]]
-                            xywh[0].clamp_(max = x)
-                            xywh[1].clamp_(max = y)
-                            xywh[2].clamp_(min = x)
-                            xywh[3].clamp_(min = y)
-        self.xywh[..., 2] -= self.xywh[..., 0]
-        self.xywh[..., 3] -= self.xywh[..., 1]
+        yx = torch.stack(torch.meshgrid(torch.arange(reg_lab.shape[-2]), torch.arange(reg_lab.shape[-1])))
+        mask = (reg_lab.unsqueeze(-1) == torch.arange(self.max_num_segments)).movedim(-1, -3).unsqueeze(-3)
+        masked_min, masked_max = torch.where(mask, yx, posinf), torch.where(mask, yx, neginf)
+        (ymin, xmin), (ymax, xmax) = masked_min.amin(dim = (-2, -1)).unbind(-1), masked_max.amax(dim = (-2, -1)).unbind(-1)
+        self.xywh = torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1)
 
     def Fill(self, r1, r2):
-        return max(0.0, min(1.0, 1.0 - float(bbox_size(bbox_merge(self.xywh[r1], self.xywh[r2])) - self.region_sizes[r1] - self.region_sizes[r2]) / float(self.img_size)))
+        return max(0.0, min(1.0, 1.0 - float(bbox_size(bbox_merge(self.xywh[r1].tolist(), self.xywh[r2].tolist())) - self.region_sizes[r1] - self.region_sizes[r2]) / float(self.img_size)))
 
     def Size(self, r1, r2):
         return max(0.0, min(1.0, 1.0 - float(self.region_sizes[r1] + self.region_sizes[r2]) / float(self.img_size)))
@@ -295,32 +301,52 @@ class HandcraftedRegionFeatures:
 
 if __name__ == '__main__':
     import argparse
+    import colorsys
     import cv2
+    import matplotlib, matplotlib.pyplot as plt
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--input-path', '-i')
     parser.add_argument('--output-path', '-o')
-    parser.add_argument('--topk', type = int, default = 100)
+    parser.add_argument('--topk', type = int, default = 30)
     parser.add_argument('--fast', action = 'store_true')
     parser.add_argument('--opencv', action = 'store_true')
+    parser.add_argument('--seed', type = int, default = 42)
+    parser.add_argument('--mask', type = int, default = 0)
     args = parser.parse_args()
     args.fast = True
 
-    img = cv2.imread(args.input_path)
+    random.seed(args.seed)
+
+    img = plt.imread(args.input_path).copy()
 
     if not args.opencv:
         algo = SelectiveSearch(fast = args.fast)
-        boxes_xywh = algo(torch.as_tensor(img)[..., [2, 1, 0]].movedim(-1, -3).unsqueeze(0) / 255.0)[0]
+        boxes_xywh, regions, reg_lab = algo(torch.as_tensor(img).movedim(-1, -3).unsqueeze(0) / 255.0)
+        mask = algo.get_region_mask(reg_lab, regions[0][args.mask])
+        boxes_xywh, regions, reg_lab = boxes_xywh[0], regions[0], reg_lab[0]
     else:
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
-        algo.setBaseImage(img)
+        algo.setBaseImage(img[..., [2, 1, 0]])
         algo.switchToSelectiveSearchFast() if args.fast else algo.switchToSelectiveSearchQuality()
         boxes_xywh = algo.process()
+        #mask = 
 
-    print('# boxes', len(boxes_xywh))
+    print('boxes', len(boxes_xywh))
     print('height:', img.shape[0], 'width:', img.shape[1])
     print('ymax', max(y + h - 1 for x, y, w, h in boxes_xywh), 'xmax', max(x + w - 1 for x, y, w, h in boxes_xywh))
 
+    #N = 1 + int(reg_lab.max())
+    #colors = torch.tensor(list(map(lambda c: colorsys.hsv_to_rgb(*c), [(i / N, 1, 1) for i in range(N)])))
+    #plt.imshow(colors[reg_lab[0, 0, 0].to(torch.int64)])
+    
+    plt.figure()
+    plt.subplot(121)
+    plt.imshow(img * mask[..., None].numpy() + img * (1 - mask[..., None].numpy()) // 5)
+    plt.axis('off')
     for x, y, w, h in boxes_xywh[:args.topk]:
-        cv2.rectangle(img, (x, y), (x + w - 1, y + h - 1), (0, 0, 255), 1)
-    cv2.imwrite(args.output_path, img)
+        plt.gca().add_patch(matplotlib.patches.Rectangle((x, y), w, h, linewidth = 1, edgecolor = 'r', facecolor = 'none'))
+    plt.subplot(122)
+    plt.imshow(mask.to(torch.float32))
+    plt.savefig(args.output_path)
+    plt.close()
