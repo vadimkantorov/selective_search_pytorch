@@ -116,9 +116,6 @@ def bbox_merge(xywh1, xywh2):
     boxPoints = lambda x, y, w, h: [(x, y), (x + w - 1, y), (x, y + h - 1), (x + w - 1, y + h - 1)]
     return bbox(boxPoints(*xywh1) + boxPoints(*xywh2))
 
-def bbox_size(xywh):
-    return int(xywh[-2]) * int(xywh[-1])
-
 def rotated_xywh(img_height, img_width, angle = 45.0, scale = 1.0):
     # https://docs.opencv.org/4.5.3/da/d54/group__imgproc__transform.html#gafbbc470ce83812914a70abfb604f4326
     
@@ -163,7 +160,7 @@ class SelectiveSearch(nn.Module):
         self.preset = preset
         
         if self.preset == 'single':
-            #int k = 200
+            #base_k = 200
             self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4)
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(base_k), self.min_size)]
             self.strategies = torch.tensor([
@@ -280,7 +277,7 @@ class SelectiveSearch(nn.Module):
                 if (u == fro or u == to) or (v == fro or v == to):
                     vv = to if fro == u or fro == v else fro
                     if vv not in visited:
-                        heapq.heappush(PQ, (-features.compute_region_affinity((b, i, g, regs[ww].id), (b, i, g, regs[vv].id), strategy), ww, vv))
+                        heapq.heappush(PQ, (-features.compute_region_affinity((b, i, g, regs[ww].id), (b, i, g, regs[vv].id), *strategy), ww, vv))
         
         print('loop', time.time() - tic); tic = time.time()
 
@@ -304,11 +301,11 @@ class HandcraftedRegionFeatures:
         self.region_sizes = torch.zeros(reg_lab.shape[:-2] + (self.max_num_segments, ), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z))
         
         Z = (reg_lab[..., None, :, :] * color_histogram_bins + img[:, :, None].mul((color_histogram_bins - 1) / 255.0)).flatten(start_dim = -2).to(torch.int64)
-        self.color_histograms = torch.zeros(reg_lab.shape[:-2] + (img_channels, self.max_num_segments * color_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, color_histogram_bins)).movedim(-2, -3)
+        self.color_histograms = torch.zeros(reg_lab.shape[:-2] + (img_channels, self.max_num_segments * color_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, color_histogram_bins)).movedim(-2, -3).contiguous()
         self.color_histograms /= self.color_histograms.sum(dim = (-2, -1), keepdim = True)
 
         Z = (reg_lab[..., None, None, :, :] * texture_histogram_bins + img_normalized_gaussian_derivatives[:, None].mul(texture_histogram_bins - 1)).flatten(start_dim = -2).to(torch.int64)
-        self.texture_histograms = torch.zeros(reg_lab.shape[:-2] + (img_channels, img_normalized_gaussian_derivatives.shape[-3], self.max_num_segments * texture_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, texture_histogram_bins)).movedim(-2, -4)
+        self.texture_histograms = torch.zeros(reg_lab.shape[:-2] + (img_channels, img_normalized_gaussian_derivatives.shape[-3], self.max_num_segments * texture_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, texture_histogram_bins)).movedim(-2, -4).contiguous()
         self.texture_histograms /= self.texture_histograms.sum(dim = (-3, -2, -1), keepdim = True)
         
         yx = torch.stack(torch.meshgrid(torch.arange(reg_lab.shape[-2]), torch.arange(reg_lab.shape[-1])))
@@ -317,34 +314,37 @@ class HandcraftedRegionFeatures:
         (ymin, xmin), (ymax, xmax) = masked_min.amin(dim = (-2, -1)).unbind(-1), masked_max.amax(dim = (-2, -1)).unbind(-1)
         self.xywh = torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1)
 
-    def Fill(self, r1, r2):
-        return max(0.0, min(1.0, 1.0 - float(bbox_size(bbox_merge(self.xywh[r1].tolist(), self.xywh[r2].tolist())) - self.region_sizes[r1] - self.region_sizes[r2]) / float(self.img_size)))
+    def compute_region_affinity(self, r1 = None, r2 = None, fill = 0, texture = 0, size = 0, color = 0):
+        bbox_size_ = lambda xywh: xywh[..., 2] * xywh[..., 3]
+        bbox_size = lambda xywh: int(xywh[-2]) * int(xywh[-1])
 
-    def Size(self, r1, r2):
-        return max(0.0, min(1.0, 1.0 - float(self.region_sizes[r1] + self.region_sizes[r2]) / float(self.img_size)))
-    
-    def Color(self, r1, r2):
-        return torch.min(self.color_histograms[r1], self.color_histograms[r2]).sum(dim = (-2, -1))
-
-    def Texture(self, r1, r2):
-        return torch.min(self.texture_histograms[r1], self.texture_histograms[r2]).sum(dim = (-3, -2, -1))
-
-    def compute_region_affinity(self, r1 = None, r2 = None, weights = None):
-        bbox_size = lambda xywh: xywh[..., 2] * xywh[..., 3]
-        def bbox_merge(xywh1, xywh2):
+        def bbox_merge_(xywh1, xywh2):
             xmin, ymin = torch.min(xywh1[..., 0], xywh2[..., 0]), torch.min(xywh1[..., 1], xywh2[..., 1])
             xmax, ymax = torch.max(xywh1[..., 0] + xywh1[..., 2] - 1, xywh2[..., 0] + xywh2[..., 2] - 1), torch.max(xywh1[..., 1] + xywh1[..., 3] - 1, xywh2[..., 1] + xywh2[..., 3] - 1)
             return torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1)
         
-        if r1 is None and r2 is None and weights is None:
+        if r1 is None and r2 is None:
             color_affinity = torch.min(self.color_histograms.unsqueeze(4), self.color_histograms.unsqueeze(3)).sum(dim = (-2, -1))
             texture_affinity = torch.min(self.texture_histograms.unsqueeze(4), self.texture_histograms.unsqueeze(3)).sum(dim = (-3, -2, -1))
             size_affinity = (1 - (self.region_sizes.unsqueeze(4) + self.region_sizes.unsqueeze(3)).div(self.img_size)).clamp(min = 0, max = 1)
-            fill_affinity = (1 - (bbox_size(bbox_merge(self.xywh.unsqueeze(4), self.xywh.unsqueeze(3))) - self.region_sizes.unsqueeze(4) - self.region_sizes.unsqueeze(3)) / self.img_size).clamp(min = 0, max = 1)
+            fill_affinity = (1 - (bbox_size_(bbox_merge_(self.xywh.unsqueeze(4), self.xywh.unsqueeze(3))) - self.region_sizes.unsqueeze(4) - self.region_sizes.unsqueeze(3)) / self.img_size).clamp(min = 0, max = 1)
             
             return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
-        
-        return sum(w * float(s(r1, r2)) if w > 0 else 0 for s, w in zip([self.Fill, self.Texture, self.Size, self.Color], weights))
+        else:
+            res = 0.0
+            if fill > 0:
+                res += max(0.0, min(1.0, 1.0 - float(bbox_size(bbox_merge(self.xywh[r1].tolist(), self.xywh[r2].tolist())) - self.region_sizes[r1] - self.region_sizes[r2]) / float(self.img_size)))
+
+            if size > 0:
+                res += max(0.0, min(1.0, 1.0 - float(self.region_sizes[r1] + self.region_sizes[r2]) / float(self.img_size)))
+
+            if color > 0:
+                res += float(torch.min(self.color_histograms[r1], self.color_histograms[r2]).sum(dim = (-2, -1)))
+
+            if texture > 0:
+                res += float(torch.min(self.texture_histograms[r1], self.texture_histograms[r2]).sum(dim = (-3, -2, -1)))
+
+            return res
     
     def merge_regions(self, r1, r2):
         self.xywh[r1] = self.xywh[r2] = torch.tensor(bbox_merge(self.xywh[r1].tolist(), self.xywh[r2].tolist()))
