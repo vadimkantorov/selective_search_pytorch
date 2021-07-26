@@ -277,7 +277,7 @@ class SelectiveSearch(nn.Module):
                 if (u == fro or u == to) or (v == fro or v == to):
                     vv = to if fro == u or fro == v else fro
                     if vv not in visited:
-                        heapq.heappush(PQ, (-features.compute_region_affinity((b, i, g, regs[ww].id), (b, i, g, regs[vv].id), *strategy), ww, vv))
+                        heapq.heappush(PQ, (-features.compute_region_affinity((b, i, g, regs[ww].id), (b, i, g, regs[vv].id), strategy), ww, vv))
         
         print('loop', time.time() - tic); tic = time.time()
 
@@ -314,7 +314,7 @@ class HandcraftedRegionFeatures:
         (ymin, xmin), (ymax, xmax) = masked_min.amin(dim = (-2, -1)).unbind(-1), masked_max.amax(dim = (-2, -1)).unbind(-1)
         self.xywh = torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1)
 
-    def compute_region_affinity(self, r1 = None, r2 = None, fill = 0, texture = 0, size = 0, color = 0):
+    def compute_region_affinity(self, r1 = None, r2 = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
         bbox_size_ = lambda xywh: xywh[..., 2] * xywh[..., 3]
         bbox_size = lambda xywh: int(xywh[-2]) * int(xywh[-1])
 
@@ -332,17 +332,18 @@ class HandcraftedRegionFeatures:
             return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
         else:
             res = 0.0
+            
             if fill > 0:
-                res += max(0.0, min(1.0, 1.0 - float(bbox_size(bbox_merge(self.xywh[r1].tolist(), self.xywh[r2].tolist())) - self.region_sizes[r1] - self.region_sizes[r2]) / float(self.img_size)))
-
-            if size > 0:
-                res += max(0.0, min(1.0, 1.0 - float(self.region_sizes[r1] + self.region_sizes[r2]) / float(self.img_size)))
-
-            if color > 0:
-                res += float(torch.min(self.color_histograms[r1], self.color_histograms[r2]).sum(dim = (-2, -1)))
-
+                res += fill * max(0.0, min(1.0, 1.0 - float(bbox_size(bbox_merge(self.xywh[r1].tolist(), self.xywh[r2].tolist())) - self.region_sizes[r1] - self.region_sizes[r2]) / self.img_size))
+            
             if texture > 0:
-                res += float(torch.min(self.texture_histograms[r1], self.texture_histograms[r2]).sum(dim = (-3, -2, -1)))
+                res += texture * float(torch.min(self.texture_histograms[r1], self.texture_histograms[r2]).sum(dim = (-3, -2, -1)))
+            
+            if size > 0:
+                res += size * max(0.0, min(1.0, 1.0 - float(self.region_sizes[r1] + self.region_sizes[r2]) / self.img_size))
+            
+            if color > 0:
+                res += color * float(torch.min(self.color_histograms[r1], self.color_histograms[r2]).sum(dim = (-2, -1)))
 
             return res
     
