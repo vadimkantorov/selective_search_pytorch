@@ -1,3 +1,17 @@
+import cProfile
+
+def profileit(func):
+    def wrapper(*args, **kwargs):
+        datafn = func.__name__ + ".profile" # Name the data file sensibly
+        prof = cProfile.Profile()
+        retval = prof.runcall(func, *args, **kwargs)
+        prof.dump_stats(datafn)
+        return retval
+
+    return wrapper
+
+
+import time
 import math
 import copy
 import heapq
@@ -140,50 +154,76 @@ def normalize_min_max(x, dim, eps = 0):
 class SelectiveSearch(nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
         
-    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, fast = True):
+    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast'):
         super().__init__()
         self.base_k = base_k
         self.inc_k = inc_k
         self.sigma = sigma
         self.min_size = min_size
-        self.fast = fast
+        self.preset = preset
         
-        #int k = 200, float sigma = 0.8)
-        #cvtColor(base_image, hsv, COLOR_BGR2HSV);
-        #Ptr<GraphSegmentation> gs = createGraphSegmentation(((float)k, sigma);
-        #color, fill, texture, size
-
-        if self.fast:
-            self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
-            self.strategies = [[HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color], [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size]]
+        if self.preset == 'single':
+            #int k = 200
             self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4)
+            self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(base_k), self.min_size)]
+            self.strategies = torch.tensor([
+                [0.25, 0.25, 0.25, 0.25],
+            ])
+            
+        elif self.preset == 'fast':
+            self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4)
+            self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
+            self.strategies = torch.tensor([
+                [0.25, 0.25, 0.25, 0.25],
+                [0.33, 0.33, 0.33, 0.00]
+            ])
         
-        else:
-            self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 4, self.inc_k)]
-            self.strategies = [[HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size, HandcraftedRegionFeatures.Color], [HandcraftedRegionFeatures.Fill, HandcraftedRegionFeatures.Texture, HandcraftedRegionFeatures.Size], [HandcraftedRegionFeatures.Fill], [HandcraftedRegionFeatures.Size]]
+        elif self.preset == 'quality':
             self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv, lab, gray.expand_as(hsv), hsv[..., :1, :, :].expand_as(hsv), torch.cat([rgb[..., :2, :, :],  gray], dim = -3)], dim = -4)
+            self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 4, self.inc_k)]
+            self.strategies = torch.tensor([
+                [0.25, 0.25, 0.25, 0.25],
+                [0.33, 0.33, 0.33, 0.00],
+                [1.00, 0.00, 0.00, 0.00],
+                [0.00, 0.00, 1.00, 0.00]
+            ])
 
     @staticmethod
     def get_region_mask(reg_lab, region):
         return (reg_lab[region.plane_id][..., None] == torch.tensor(list(region.ids), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1)
 
     def forward(self, img):
+        tic = time.time()
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
         hsv[..., 0, :, :] /= 2.0 * math.pi 
         hsv *= 255.0
         #lab[..., 0, :, :] *= 255.0/100.0
         #gray *= 255.0
         #img *= 255.0
-    
+        
         imgs = self.images(img, hsv, lab, gray)
         
+        print('images', time.time() - tic); tic = time.time()
+
         reg_lab = torch.stack([torch.as_tensor(gs.processImage(img.movedim(-3, -1).numpy())) for img in imgs.flatten(end_dim = -4) for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),))
         
-        features = HandcraftedRegionFeatures(img, reg_lab)
+        print('graph segmentation', time.time() - tic); tic = time.time()
         
-        graph_adj = self.build_graph(reg_lab, max_num_segments = features.max_num_segments)
+        features = HandcraftedRegionFeatures(imgs, reg_lab)
         
-        all_regs = [reg for strategy in self.strategies for reg in self.hierarchical_grouping(copy.deepcopy(features), strategy, graph_adj)]
+        affinity0 = features.compute_region_affinity()
+        
+        print('features', time.time() - tic); tic = time.time()
+        
+        graphadj = self.build_graph(reg_lab, max_num_segments = features.max_num_segments)
+
+        graphadj0 = (graphadj[..., None, None] * affinity0.unsqueeze(-2) * self.strategies).sum(dim = -1)
+
+        print('build graph', time.time() - tic); tic = time.time()
+        
+        all_regs = [reg for strategy, graphadj in zip(self.strategies, graphadj0.unbind(-1)) for reg in self.hierarchical_grouping(copy.deepcopy(features), graphadj, strategy.tolist()) if reg.level >= 1]
+        
+        print('grouping', time.time() - tic); tic = time.time()
         
         key_img_id, key_rank = (lambda reg: reg.img_id), (lambda reg: reg.rank)
         by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted(all_regs, key = key_img_id), key = key_img_id)}
@@ -200,29 +240,26 @@ class SelectiveSearch(nn.Module):
         dy = torch.cat([I.expand(-1, -1, -1, -1, *DY.shape[-2:]), DY], dim = -3).flatten(start_dim = -2)
         i = torch.cat([dx, dy], dim = -1).movedim(-2, 0).flatten(start_dim = 1)
         v = torch.ones(i.shape[1], dtype = torch.bool)
-        return torch.sparse_coo_tensor(i, v, reg_lab.shape[:3] + (max_num_segments, max_num_segments), dtype = torch.int64).coalesce().to(torch.bool).to_dense()
+        A = torch.sparse_coo_tensor(i, v, reg_lab.shape[:-2] + (max_num_segments, max_num_segments), dtype = torch.int64)
+        A += A.transpose(-1, -2)
+        return A.coalesce().to(torch.bool).to_dense().triu(diagonal = 1)
 
-    @staticmethod
-    def hierarchical_grouping(features, strategy, graph_adj, compute_rank = lambda region: region.level * random.random()):
-        
+    #@profileit
+    def hierarchical_grouping(self, features, graphadj, strategy, compute_rank = lambda region: region.level * random.random()):
         @dataclasses.dataclass(order = True)
         class RegionNode: rank : float; id : int; level : int; parent_id : int; bbox : tuple; plane_id: tuple; img_id: int; ids : set;
         
-        regs, PQ = [], []
-
-        for b in range(graph_adj.shape[0]):
-            for i in range(graph_adj.shape[1]):
-                for g in range(graph_adj.shape[2]):
-                    r0 = len(regs)
-                    num_segments = int(features.num_segments[b, i, g])
-                    for r1 in range(num_segments):
-                        regs.append(RegionNode(id = r1, img_id = b, plane_id = (b, i, g), level = 1, bbox = tuple(features.xywh[b, i, g, r1].tolist()), ids = {r1}, parent_id = -1, rank = 0))
-
-                        for r2 in range(r1 + 1, num_segments):
-                            u, v = r0 + r1, r0 + r2
-                            if graph_adj[b, i, g, r1, r2]:
-                                PQ.append((-float(features.compute_region_similarity((b, i, g, r1), (b, i, g, r2), strategy)), u, v))
-
+        tic = time.time()
+        
+        ga = graphadj.to_sparse()
+        b, i, g, r1, r2 = ga.indices()
+        v = ga.values()
+        r0 = b * i * g * features.max_num_segments
+        good = ~v.isnan()
+        PQ = list(zip(v.neg()[good].tolist(), (r0 + r1)[good].tolist(), (r0 + r2)[good].tolist()))
+        regs = [RegionNode(id = r1, img_id = b, plane_id = (b, i, g), level = 1 if r1 < int(features.num_segments[b, i, g]) else 0, bbox = tuple(features.xywh[b, i, g, r1].tolist()), ids = {r1}, parent_id = -1, rank = 0) for b in range(graphadj.shape[0]) for i in range(graphadj.shape[1]) for g in range(graphadj.shape[2]) for r1 in range(graphadj.shape[3])]
+        
+        print('init', time.time() - tic); tic = time.time()
         visited = set()
         heapq.heapify(PQ)
         while PQ:
@@ -243,7 +280,9 @@ class SelectiveSearch(nn.Module):
                 if (u == fro or u == to) or (v == fro or v == to):
                     vv = to if fro == u or fro == v else fro
                     if vv not in visited:
-                        heapq.heappush(PQ, (-float(features.compute_region_similarity((b, i, g, regs[ww].id), (b, i, g, regs[vv].id), strategy)), ww, vv))
+                        heapq.heappush(PQ, (-features.compute_region_affinity((b, i, g, regs[ww].id), (b, i, g, regs[vv].id), strategy), ww, vv))
+        
+        print('loop', time.time() - tic); tic = time.time()
 
         for region in regs:
             region.rank = compute_rank(region)
@@ -251,7 +290,7 @@ class SelectiveSearch(nn.Module):
         return regs
 
 class HandcraftedRegionFeatures:
-    def __init__(self, img : 'B3HW', reg_lab : 'BIGHW', color_histogram_bins = 25, texture_histogram_bins = 10, neginf = -int(1e9), posinf = int(1e9)):
+    def __init__(self, img : 'BI3HW', reg_lab : 'BIGHW', color_histogram_bins = 25, texture_histogram_bins = 10, neginf = -int(1e9), posinf = int(1e9)):
         ones_like_expand = lambda tensor: torch.ones(1, device = tensor.device, dtype = torch.float32).expand_as(tensor)
         
         img_channels, img_height, img_width = img.shape[-3:]
@@ -259,17 +298,17 @@ class HandcraftedRegionFeatures:
         self.num_segments = 1 + reg_lab.amax(dim = (-2, -1))
         self.max_num_segments = int(self.num_segments.amax())
 
-        img_normalized_gaussian_derivatives = normalize_min_max(image_gaussian_derivatives(img), dim = (-2, -1))
+        img_normalized_gaussian_derivatives = normalize_min_max(image_gaussian_derivatives(img.flatten(end_dim = -4)).unflatten(0, img.shape[:-3]), dim = (-2, -1))
         
         Z = reg_lab.flatten(start_dim = -2).to(torch.int64)
-        self.region_sizes = torch.zeros(reg_lab.shape[:3] + (self.max_num_segments, ), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z))
+        self.region_sizes = torch.zeros(reg_lab.shape[:-2] + (self.max_num_segments, ), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z))
         
-        Z = (reg_lab[..., None, :, :] * color_histogram_bins + img[:, None, None].mul((color_histogram_bins - 1) / 255.0)).flatten(start_dim = -2).to(torch.int64)
-        self.color_histograms = torch.zeros(reg_lab.shape[:3] + (img_channels, self.max_num_segments * color_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, color_histogram_bins)).movedim(-2, -3)
+        Z = (reg_lab[..., None, :, :] * color_histogram_bins + img[:, :, None].mul((color_histogram_bins - 1) / 255.0)).flatten(start_dim = -2).to(torch.int64)
+        self.color_histograms = torch.zeros(reg_lab.shape[:-2] + (img_channels, self.max_num_segments * color_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, color_histogram_bins)).movedim(-2, -3)
         self.color_histograms /= self.color_histograms.sum(dim = (-2, -1), keepdim = True)
 
-        Z = (reg_lab[..., None, None, :, :] * texture_histogram_bins + img_normalized_gaussian_derivatives[:, None, None].mul(texture_histogram_bins - 1)).flatten(start_dim = -2).to(torch.int64)
-        self.texture_histograms = torch.zeros(reg_lab.shape[:3] + (img_channels, img_normalized_gaussian_derivatives.shape[-3], self.max_num_segments * texture_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, texture_histogram_bins)).movedim(-2, -4)
+        Z = (reg_lab[..., None, None, :, :] * texture_histogram_bins + img_normalized_gaussian_derivatives[:, None].mul(texture_histogram_bins - 1)).flatten(start_dim = -2).to(torch.int64)
+        self.texture_histograms = torch.zeros(reg_lab.shape[:-2] + (img_channels, img_normalized_gaussian_derivatives.shape[-3], self.max_num_segments * texture_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, texture_histogram_bins)).movedim(-2, -4)
         self.texture_histograms /= self.texture_histograms.sum(dim = (-3, -2, -1), keepdim = True)
         
         yx = torch.stack(torch.meshgrid(torch.arange(reg_lab.shape[-2]), torch.arange(reg_lab.shape[-1])))
@@ -290,8 +329,22 @@ class HandcraftedRegionFeatures:
     def Texture(self, r1, r2):
         return torch.min(self.texture_histograms[r1], self.texture_histograms[r2]).sum(dim = (-3, -2, -1))
 
-    def compute_region_similarity(self, r1, r2, strategies):
-        return sum(s(self, r1, r2) for s in strategies) / len(strategies)
+    def compute_region_affinity(self, r1 = None, r2 = None, weights = None):
+        bbox_size = lambda xywh: xywh[..., 2] * xywh[..., 3]
+        def bbox_merge(xywh1, xywh2):
+            xmin, ymin = torch.min(xywh1[..., 0], xywh2[..., 0]), torch.min(xywh1[..., 1], xywh2[..., 1])
+            xmax, ymax = torch.max(xywh1[..., 0] + xywh1[..., 2] - 1, xywh2[..., 0] + xywh2[..., 2] - 1), torch.max(xywh1[..., 1] + xywh1[..., 3] - 1, xywh2[..., 1] + xywh2[..., 3] - 1)
+            return torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1)
+        
+        if r1 is None and r2 is None and weights is None:
+            color_affinity = torch.min(self.color_histograms.unsqueeze(4), self.color_histograms.unsqueeze(3)).sum(dim = (-2, -1))
+            texture_affinity = torch.min(self.texture_histograms.unsqueeze(4), self.texture_histograms.unsqueeze(3)).sum(dim = (-3, -2, -1))
+            size_affinity = (1 - (self.region_sizes.unsqueeze(4) + self.region_sizes.unsqueeze(3)).div(self.img_size)).clamp(min = 0, max = 1)
+            fill_affinity = (1 - (bbox_size(bbox_merge(self.xywh.unsqueeze(4), self.xywh.unsqueeze(3))) - self.region_sizes.unsqueeze(4) - self.region_sizes.unsqueeze(3)) / self.img_size).clamp(min = 0, max = 1)
+            
+            return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
+        
+        return sum(w * float(s(r1, r2)) if w > 0 else 0 for s, w in zip([self.Fill, self.Texture, self.Size, self.Color], weights))
     
     def merge_regions(self, r1, r2):
         self.xywh[r1] = self.xywh[r2] = torch.tensor(bbox_merge(self.xywh[r1].tolist(), self.xywh[r2].tolist()))
@@ -309,7 +362,7 @@ if __name__ == '__main__':
     parser.add_argument('--input-path', '-i')
     parser.add_argument('--output-path', '-o')
     parser.add_argument('--topk', type = int, default = 30)
-    parser.add_argument('--fast', action = 'store_true')
+    parser.add_argument('--preset', choices = ['fast', 'quality', 'single'], default = 'fast')
     parser.add_argument('--opencv', action = 'store_true')
     parser.add_argument('--seed', type = int, default = 42)
     parser.add_argument('--mask', type = int, default = 0)
@@ -321,16 +374,18 @@ if __name__ == '__main__':
     img = plt.imread(args.input_path).copy()
 
     if not args.opencv:
-        algo = SelectiveSearch(fast = args.fast)
+        algo = SelectiveSearch(preset = args.preset)
         boxes_xywh, regions, reg_lab = algo(torch.as_tensor(img).movedim(-1, -3).unsqueeze(0) / 255.0)
         mask = algo.get_region_mask(reg_lab, regions[0][args.mask])
         boxes_xywh, regions, reg_lab = boxes_xywh[0], regions[0], reg_lab[0]
     else:
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
         algo.setBaseImage(img[..., [2, 1, 0]])
-        algo.switchToSelectiveSearchFast() if args.fast else algo.switchToSelectiveSearchQuality()
+        dict(fast = algo.switchToSelectiveSearchFast, quality = algo.switchToSelectiveSearchQuality, single = algo.switchToSingleStrategy)[args.preset]()
         boxes_xywh = algo.process()
-        #mask = 
+        x, y, w, h = boxes_xywh[args.mask]
+        mask = torch.zeros(img.shape[:-1])
+        mask[y : y + h, x : x + w] = 1
 
     print('boxes', len(boxes_xywh))
     print('height:', img.shape[0], 'width:', img.shape[1])
