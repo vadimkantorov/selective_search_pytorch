@@ -172,7 +172,7 @@ class SelectiveSearch(nn.Module):
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
             self.strategies = torch.tensor([
                 [0.25, 0.25, 0.25, 0.25],
-                [0.33, 0.33, 0.33, 0.00]
+                #[0.33, 0.33, 0.33, 0.00]
             ])
         
         elif self.preset == 'quality':
@@ -218,7 +218,15 @@ class SelectiveSearch(nn.Module):
 
         print('build graph', time.time() - tic); tic = time.time()
         
-        all_regs = [reg for strategy, graphadj in zip(self.strategies, graphadj0.unbind(-1)) for reg in self.hierarchical_grouping(copy.deepcopy(features), graphadj, strategy.tolist()) if reg.level >= 1]
+        all_regs = []
+        #all_regs = [reg for strategy, graphadj in zip(self.strategies, graphadj0.unbind(-1)) for reg in self.hierarchical_grouping(copy.deepcopy(features), graphadj, strategy.tolist()) if reg.level >= 1]
+        
+        for strategy, graphadj in zip(self.strategies, graphadj0.unbind(-1)):
+            copied_features = copy.deepcopy(features)
+            for reg in self.hierarchical_grouping(copied_features, graphadj, strategy.tolist()):
+                if reg.level >= 1:
+                    all_regs.append(reg)
+            print(strategy, 'count_merge', copied_features.count_merge, copied_features.time_merge / copied_features.count_merge * 1000, 'ms | count_measure', copied_features.count_measure, copied_features.time_measure / copied_features.count_measure * 1000, 'ms')
         
         print('grouping', time.time() - tic); tic = time.time()
         
@@ -277,7 +285,7 @@ class SelectiveSearch(nn.Module):
                 if (u == fro or u == to) or (v == fro or v == to):
                     vv = to if fro == u or fro == v else fro
                     if vv not in visited:
-                        heapq.heappush(PQ, (-features.compute_region_affinity((b, i, g, regs[ww].id), (b, i, g, regs[vv].id), strategy), ww, vv))
+                        heapq.heappush(PQ, (-features.compute_region_affinity((b, i, g, regs[ww].id), (b, i, g, regs[vv].id), *strategy), ww, vv))
         
         print('loop', time.time() - tic); tic = time.time()
 
@@ -288,6 +296,12 @@ class SelectiveSearch(nn.Module):
 
 class HandcraftedRegionFeatures:
     def __init__(self, img : 'BI3HW', reg_lab : 'BIGHW', color_histogram_bins = 25, texture_histogram_bins = 10, neginf = -int(1e9), posinf = int(1e9)):
+        self.count_merge = 0
+        self.count_measure = 0
+        self.time_merge = 0.0
+        self.time_measure = 0.0
+        self.dummy_region_sizes = [0.0] * 1000
+
         ones_like_expand = lambda tensor: torch.ones(1, device = tensor.device, dtype = torch.float32).expand_as(tensor)
         
         img_channels, img_height, img_width = img.shape[-3:]
@@ -331,27 +345,39 @@ class HandcraftedRegionFeatures:
             
             return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
         else:
+            self.count_measure += 1
+            r1 = r1[-1]; r2 = r2[-1]
+            tic = time.time()
             res = 0.0
             
-            if fill > 0:
-                res += fill * max(0.0, min(1.0, 1.0 - float(bbox_size(bbox_merge(self.xywh[r1].tolist(), self.xywh[r2].tolist())) - self.region_sizes[r1] - self.region_sizes[r2]) / self.img_size))
-            
-            if texture > 0:
-                res += texture * float(torch.min(self.texture_histograms[r1], self.texture_histograms[r2]).sum(dim = (-3, -2, -1)))
-            
             if size > 0:
-                res += size * max(0.0, min(1.0, 1.0 - float(self.region_sizes[r1] + self.region_sizes[r2]) / self.img_size))
+                res += size * max(0.0, min(1.0, 1.0 - float(self.dummy_region_sizes[r1] + self.dummy_region_sizes[r2]) / self.img_size))
+            #    res += size * max(0.0, min(1.0, 1.0 - float(self.region_sizes[r1] + self.region_sizes[r2]) / self.img_size))
+            #if fill > 0:
+            #    res += fill * max(0.0, min(1.0, 1.0 - float(bbox_size(bbox_merge(self.xywh[r1].tolist(), self.xywh[r2].tolist())) - self.region_sizes[r1] - self.region_sizes[r2]) / self.img_size))
             
-            if color > 0:
-                res += color * float(torch.min(self.color_histograms[r1], self.color_histograms[r2]).sum(dim = (-2, -1)))
+            #if color > 0:
+            #    res += color * float(torch.min(self.color_histograms[r1], self.color_histograms[r2]).sum(dim = (-2, -1)))
+            #if texture > 0:
+            #    res += texture * float(torch.min(self.texture_histograms[r1], self.texture_histograms[r2]).sum(dim = (-3, -2, -1)))
 
+            self.time_measure += time.time() - tic
             return res
-    
+
     def merge_regions(self, r1, r2):
+        self.count_merge += 1
+        tic = time.time()
         self.xywh[r1] = self.xywh[r2] = torch.tensor(bbox_merge(self.xywh[r1].tolist(), self.xywh[r2].tolist()))
         self.region_sizes[r1] = self.region_sizes[r2] = self.region_sizes[r1] + self.region_sizes[r2]
         self.color_histograms[r1] = self.color_histograms[r2] = (self.color_histograms[r1] * self.region_sizes[r1] + self.color_histograms[r2] * self.region_sizes[r2]) / (self.region_sizes[r1] + self.region_sizes[r2]) 
-        self.texture_histograms[r1] = self.texture_histograms[r2] = (self.texture_histograms[r1] * self.region_sizes[r1] + self.texture_histograms[r2] * self.region_sizes[r2]) / (self.region_sizes[r1] + self.region_sizes[r2]) 
+        self.texture_histograms[r1] = self.texture_histograms[r2] = (self.texture_histograms[r1] * self.region_sizes[r1] + self.texture_histograms[r2] * self.region_sizes[r2]) / (self.region_sizes[r1] + self.region_sizes[r2])
+        self.time_merge += time.time() - tic
+
+    def flatten(self):
+        self.region_sizes = self.region_sizes.flatten().tolist()
+        self.xywh = self.xywh.flatten(end_dim = -2).tolist()
+        self.color_histograms = self.color_histograms.flatten(start_dim = -2).flatten(end_dim = -2)
+        self.texture_histograms = self.texture_histograms.flatten(start_dim = -3).flatten(end_dim = -2)
 
 if __name__ == '__main__':
     import argparse
