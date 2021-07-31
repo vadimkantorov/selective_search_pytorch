@@ -210,15 +210,15 @@ class SelectiveSearch(torch.nn.Module):
         ga = graphadj.movedim(-1, -3).flatten(end_dim = -3)
         ga_sparse = ga.to_sparse()
         (r, r1, r2), sim = ga_sparse.indices(), ga_sparse.values()
-        r0 = r * max_num_segments
-        PQ = list(zip(sim.neg().tolist(), (r0 + r1).tolist(), (r0 + r2).tolist()))
+        plane_idx = r * max_num_segments
+        PQ = list(zip(sim.neg().tolist(), (plane_idx + r1).tolist(), (plane_idx + r2).tolist()))
         
         gasym_sparse = (ga + ga.transpose(-2, -1)).to_sparse()
         (r, r1, r2), sim = gasym_sparse.indices(), gasym_sparse.values()
-        r0 = r * max_num_segments
-        graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((r0 + r1).tolist(), (r0 + r2).tolist()), key = lambda t: t[0])}
+        plane_idx = r * max_num_segments
+        graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((plane_idx + r1).tolist(), (plane_idx + r2).tolist()), key = lambda t: t[0])}
         
-        regs = [dict(plane_id = (b, i, g, s), id = r1, r = r, level = 0 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[r * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for r, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
+        regs = [dict(plane_id = (b, i, g, s), id = r1, plane_idx = plane_idx, level = 0 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[r * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for plane_idx, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
         heapq.heapify(PQ)
         
@@ -231,8 +231,8 @@ class SelectiveSearch(torch.nn.Module):
             regs.append(dict(reg_fro, level = 1 + max(reg_fro['level'], reg_to['level']), ids = reg_fro['ids'] | reg_to['ids'], id = min(reg_fro['id'], reg_to['id'])))
             reg_fro['parent_id'] = reg_to['parent_id'] = len(regs) - 1
             
-            features.merge_regions(reg_fro['id'], reg_to['id'], reg_fro['r'])
-            regs[-1]['bbox'] = tuple(features.xywh_[regs[-1]['r'] * max_num_segments + regs[-1]['id']])
+            features.merge_regions(reg_fro['id'], reg_to['id'], reg_fro['plane_idx'])
+            regs[-1]['bbox'] = tuple(features.xywh_[regs[-1]['plane_idx'] * max_num_segments + regs[-1]['id']])
 
             for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_id'], features, regs, graph):
                 heapq.heappush(PQ, new_edge)
@@ -266,7 +266,7 @@ class SelectiveSearch(torch.nn.Module):
                 if vv == u or vv == v:
                     continue
 
-                new_edges.append((-features.compute_region_affinity(regs[ww]['id'], regs[vv]['id'], regs[ww]['r'], *regs[ww]['strategy']), ww, vv))
+                new_edges.append((-features.compute_region_affinity(regs[ww]['id'], regs[vv]['id'], regs[ww]['plane_idx'], *regs[ww]['strategy']), ww, vv))
 
                 graph[vv].remove(uu)
                 graph[vv].add(ww)
@@ -299,7 +299,7 @@ class HandcraftedRegionFeatures:
         self.texture_hist_buffer = torch.empty(self.texture_hist.shape[-1], dtype = self.texture_hist.dtype)
         self.color_hist_buffer = torch.empty(self.color_hist.shape[-1], dtype = self.color_hist.dtype)
     
-    def compute_region_affinity(self, r1 = None, r2 = None, r = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
+    def compute_region_affinity(self, r1 = None, r2 = None, plane_idx = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
         bbox_size_tensor = lambda xywh: xywh[..., -2] * xywh[..., -1]
         bbox_size = lambda xywh: xywh[-2] * xywh[-1]
         clamp01 = lambda x: max(0, min(1, x))
@@ -312,37 +312,37 @@ class HandcraftedRegionFeatures:
             return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
 
         else:
-            r0 = r * self.max_num_segments
+            plane_idx = r * self.max_num_segments
             
             res = 0.0
             
             if size > 0:
-                res += size * clamp01(1 - (self.region_sizes_[r0 + r1] + self.region_sizes_[r0 + r2]) / self.img_size)
+                res += size * clamp01(1 - (self.region_sizes_[plane_idx + r1] + self.region_sizes_[plane_idx + r2]) / self.img_size)
             
             if fill > 0:
-                res += fill * clamp01(1 - (bbox_size(bbox_merge(self.xywh_[r0 + r1], self.xywh_[r0 + r2])) - self.region_sizes_[r0 + r1] - self.region_sizes_[r0 + r2]) / self.img_size)
+                res += fill * clamp01(1 - (bbox_size(bbox_merge(self.xywh_[plane_idx + r1], self.xywh_[plane_idx + r2])) - self.region_sizes_[plane_idx + r1] - self.region_sizes_[plane_idx + r2]) / self.img_size)
             
             if color > 0:
-                res += color * float(torch.min(self.color_hist_[r0 + r1], self.color_hist_[r0 + r2], out = self.color_hist_buffer).sum(dim = -1))
+                res += color * float(torch.min(self.color_hist_[plane_idx + r1], self.color_hist_[plane_idx + r2], out = self.color_hist_buffer).sum(dim = -1))
             
             if texture > 0:
-                res += texture * float(torch.min(self.texture_hist_[r0 + r1], self.texture_hist_[r0 + r2], out = self.texture_hist_buffer).sum(dim = -1))
+                res += texture * float(torch.min(self.texture_hist_[plane_idx + r1], self.texture_hist_[plane_idx + r2], out = self.texture_hist_buffer).sum(dim = -1))
 
             return res
     
     def merge_regions(self, r1, r2, r):
-        r0 = r * self.max_num_segments
+        plane_idx = r * self.max_num_segments
         
-        s1, s2 = self.region_sizes_[r0 + r1], self.region_sizes_[r0 + r2]
+        s1, s2 = self.region_sizes_[plane_idx + r1], self.region_sizes_[plane_idx + r2]
         s1s2 = s1 + s2
 
-        self.region_sizes_[r0 + r2] = self.region_sizes_[r0 + r1] = s1s2
+        self.region_sizes_[plane_idx + r2] = self.region_sizes_[plane_idx + r1] = s1s2
 
-        self.xywh_[r0 + r2] = self.xywh_[r0 + r1] = bbox_merge(self.xywh_[r0 + r1], self.xywh_[r0 + r2])
+        self.xywh_[plane_idx + r2] = self.xywh_[plane_idx + r1] = bbox_merge(self.xywh_[plane_idx + r1], self.xywh_[plane_idx + r2])
         
-        self.color_hist_[r0 + r2].copy_(self.color_hist_[r0 + r1].mul_(s1).add_(self.color_hist_[r0 + r2].mul_(s2)).div_(s1s2))
+        self.color_hist_[plane_idx + r2].copy_(self.color_hist_[plane_idx + r1].mul_(s1).add_(self.color_hist_[plane_idx + r2].mul_(s2)).div_(s1s2))
         
-        self.texture_hist_[r0 + r2].copy_(self.texture_hist_[r0 + r1].mul_(s1).add_(self.texture_hist_[r0 + r2].mul_(s2)).div_(s1s2))
+        self.texture_hist_[plane_idx + r2].copy_(self.texture_hist_[plane_idx + r1].mul_(s1).add_(self.texture_hist_[plane_idx + r2].mul_(s2)).div_(s1s2))
         
     def expand_and_flatten(self, num_strategies):
         self.region_sizes_ = expand_dim(self.region_sizes, num_strategies, dim = -2).flatten().tolist()
