@@ -1,16 +1,3 @@
-import cProfile
-def profileit(func):
-    def wrapper(*args, **kwargs):
-        datafn = func.__name__ + ".profile" # Name the data file sensibly
-        prof = cProfile.Profile()
-        retval = prof.runcall(func, *args, **kwargs)
-        prof.dump_stats(datafn)
-        return retval
-
-    return wrapper
-
-import cv2.ximgproc.segmentation
-
 import math
 import heapq
 import random
@@ -124,11 +111,6 @@ def expand_dim(tensor, expand, dim):
 def expand_ones_like(tensor, dtype = torch.float32):
     return torch.ones(1, device = tensor.device, dtype = dtype).expand_as(tensor)
 
-def bbox_merge(xywh1, xywh2):
-    x1, y1 = min(xywh1[0], xywh2[0]), min(xywh1[1], xywh2[1])
-    x2, y2 = max(xywh1[0] + xywh1[2] - 1, xywh2[0] + xywh2[2] - 1), max(xywh1[1] + xywh1[3] - 1, xywh2[1] + xywh2[3] - 1)
-    return (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
-
 def rotated_xywh(img_height, img_width, angle = 45.0, scale = 1.0):
     # https://docs.opencv.org/4.5.3/da/d54/group__imgproc__transform.html#gafbbc470ce83812914a70abfb604f4326
     
@@ -147,6 +129,16 @@ def rotated_xywh(img_height, img_width, angle = 45.0, scale = 1.0):
     xywh = (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
 
     return xywh
+
+def bbox_merge_tensor(xywh1, xywh2):
+    xmin, ymin = torch.min(xywh1[..., 0], xywh2[..., 0]), torch.min(xywh1[..., 1], xywh2[..., 1])
+    xmax, ymax = torch.max(xywh1[..., 0] + xywh1[..., 2] - 1, xywh2[..., 0] + xywh2[..., 2] - 1), torch.max(xywh1[..., 1] + xywh1[..., 3] - 1, xywh2[..., 1] + xywh2[..., 3] - 1)
+    return torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1)
+
+def bbox_merge(xywh1, xywh2):
+    x1, y1 = min(xywh1[0], xywh2[0]), min(xywh1[1], xywh2[1])
+    x2, y2 = max(xywh1[0] + xywh1[2] - 1, xywh2[0] + xywh2[2] - 1), max(xywh1[1] + xywh1[3] - 1, xywh2[1] + xywh2[3] - 1)
+    return (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
 
 class SelectiveSearch(torch.nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
@@ -226,7 +218,7 @@ class SelectiveSearch(torch.nn.Module):
         r0 = r * max_num_segments
         graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((r0 + r1).tolist(), (r0 + r2).tolist()), key = lambda t: t[0])}
         
-        regs = [dict(plane_id = (b, i, g, s), id = r1, r = r, level = 1 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[r * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for r, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
+        regs = [dict(plane_id = (b, i, g, s), id = r1, r = r, level = 0 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[r * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for r, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
         heapq.heapify(PQ)
         
@@ -236,17 +228,19 @@ class SelectiveSearch(torch.nn.Module):
                 continue
             
             reg_fro, reg_to = regs[u], regs[v]
-            regs.append(dict(reg_fro, level = 1 + max(reg_fro['level'], reg_to['level']), bbox = bbox_merge(reg_fro['bbox'], reg_to['bbox']), ids = reg_fro['ids'] | reg_to['ids'], id = min(reg_fro['id'], reg_to['id'])))
+            regs.append(dict(reg_fro, level = 1 + max(reg_fro['level'], reg_to['level']), ids = reg_fro['ids'] | reg_to['ids'], id = min(reg_fro['id'], reg_to['id'])))
             reg_fro['parent_id'] = reg_to['parent_id'] = len(regs) - 1
             
             features.merge_regions(reg_fro['id'], reg_to['id'], reg_fro['r'])
+            regs[-1]['bbox'] = tuple(features.xywh_[regs[-1]['r'] * max_num_segments + regs[-1]['id']])
+
             for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_id'], features, regs, graph):
                 heapq.heappush(PQ, new_edge)
         
         for reg in regs:
             reg['rank'] = self.compute_region_rank(reg)
         key_img_id, key_rank = (lambda reg: reg['plane_id'][0]), (lambda reg: reg['rank'])
-        by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 1], key = key_img_id), key = key_img_id)}
+        by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 0], key = key_img_id), key = key_img_id)}
         without_duplicates = [{reg['bbox'] : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
         return [list(without_duplicates[b].keys()) for b in range(len(img))], [[by_image[b][i] for i in without_duplicates[b].values()] for b in range(len(img))], reg_lab
     
@@ -306,18 +300,13 @@ class HandcraftedRegionFeatures:
         self.color_hist_buffer = torch.empty(self.color_hist.shape[-1], dtype = self.color_hist.dtype)
     
     def compute_region_affinity(self, r1 = None, r2 = None, r = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
-        bbox_size_ = lambda xywh: xywh[..., -2] * xywh[..., -1]
+        bbox_size_tensor = lambda xywh: xywh[..., -2] * xywh[..., -1]
         bbox_size = lambda xywh: xywh[-2] * xywh[-1]
         clamp01 = lambda x: max(0, min(1, x))
-
-        def bbox_merge_(xywh1, xywh2):
-            xmin, ymin = torch.min(xywh1[..., 0], xywh2[..., 0]), torch.min(xywh1[..., 1], xywh2[..., 1])
-            xmax, ymax = torch.max(xywh1[..., 0] + xywh1[..., 2] - 1, xywh2[..., 0] + xywh2[..., 2] - 1), torch.max(xywh1[..., 1] + xywh1[..., 3] - 1, xywh2[..., 1] + xywh2[..., 3] - 1)
-            return torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1)
         
         if r1 is None and r2 is None:
             size_affinity = (1 - (self.region_sizes.unsqueeze(-1) + self.region_sizes.unsqueeze(-2)).div_(self.img_size)).clamp_(min = 0, max = 1)
-            fill_affinity = (1 - (bbox_size_(bbox_merge_(self.xywh.unsqueeze(-2), self.xywh.unsqueeze(-3))) - self.region_sizes.unsqueeze(-1) - self.region_sizes.unsqueeze(-2)) / self.img_size).clamp_(min = 0, max = 1)
+            fill_affinity = (1 - (bbox_size_tensor(bbox_merge_tensor(self.xywh.unsqueeze(-2), self.xywh.unsqueeze(-3))) - self.region_sizes.unsqueeze(-1) - self.region_sizes.unsqueeze(-2)) / self.img_size).clamp_(min = 0, max = 1)
             color_affinity = torch.min(self.color_hist.unsqueeze(-2), self.color_hist.unsqueeze(-3)).sum(dim = -1)
             texture_affinity = torch.min(self.texture_hist.unsqueeze(-2), self.texture_hist.unsqueeze(-3)).sum(dim = -1)
             return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
@@ -363,8 +352,6 @@ class HandcraftedRegionFeatures:
 
 if __name__ == '__main__':
     import argparse
-    import colorsys
-    import cv2
     import matplotlib, matplotlib.pyplot as plt
 
     parser = argparse.ArgumentParser()
@@ -376,6 +363,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type = int, default = 42)
     parser.add_argument('--begin', type = int, default = 0)
     parser.add_argument('--grid', type = int, default = 4)
+    parser.add_argument('--plane-id', type = int, nargs = 4, default = [0, 0, 0, 0])
     args = parser.parse_args()
     args.fast = True
 
@@ -386,9 +374,10 @@ if __name__ == '__main__':
     if not args.opencv:
         algo = SelectiveSearch(preset = args.preset)
         boxes_xywh, regions, reg_lab = algo(torch.as_tensor(img).movedim(-1, -3).unsqueeze(0) / 255.0)
-        breakpoint()
         mask = lambda k: algo.get_region_mask(reg_lab, regions[0][k])
         boxes_xywh = boxes_xywh[0]
+        key_level = lambda reg: reg['level']
+        level2regions = lambda plane_id: {k : list(g) for k, g in itertools.groupby(sorted([reg for reg in regions[0] if reg['plane_id'] == tuple(plane_id)], key = key_level), key = key_level)}
 
     else:
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
@@ -396,21 +385,21 @@ if __name__ == '__main__':
         dict(fast = algo.switchToSelectiveSearchFast, quality = algo.switchToSelectiveSearchQuality, single = algo.switchToSingleStrategy)[args.preset]()
         boxes_xywh = algo.process()
         
+        level2regions = lambda plane_id: []
         def mask(k):
             x, y, w, h = boxes_xywh[k]
             res = torch.zeros(img.shape[:-1])
             res[y : y + h, x : x + w] = 1
             return res
 
+    max_num_segments = 1 + max(reg['id'] for reg in regions[0])
+    l2r = level2regions(plane_id = args.plane_id)
+
     print('boxes', len(boxes_xywh))
     print('height:', img.shape[0], 'width:', img.shape[1])
     print('ymax', max(y + h - 1 for x, y, w, h in boxes_xywh), 'xmax', max(x + w - 1 for x, y, w, h in boxes_xywh))
 
-    #N = 1 + int(reg_lab.max())
-    #colors = torch.tensor(list(map(lambda c: colorsys.hsv_to_rgb(*c), [(i / N, 1, 1) for i in range(N)])))
-    #plt.imshow(colors[reg_lab[0, 0, 0].to(torch.int64)])
-
-    plt.figure(figsize = (args.grid, args.grid))
+    fig = plt.figure(figsize = (args.grid, args.grid))
     plt.subplot(args.grid, args.grid, 1)
     plt.imshow(img, aspect = 'auto')
     plt.axis('off')
@@ -427,3 +416,26 @@ if __name__ == '__main__':
 
     plt.subplots_adjust(0, 0, 1, 1, wspace = 0, hspace = 0)
     plt.savefig(args.output_path)
+    plt.close(fig)
+
+    if not l2r:
+        pass
+
+    fig, ax = plt.subplots()
+    plt.subplots_adjust(0, 0, 1, 1)
+    def update(level, im = []):
+        reg_lab_ = reg_lab[tuple(args.plane_id)[:-1]].clone()
+        for reg in l2r[level]:
+            min_id = min(reg['ids'])
+            for id in reg['ids']:
+                reg_lab_[reg_lab_ == id] = min_id
+        
+        y = reg_lab_ / max_num_segments
+
+        (im or im.append(plt.imshow(y, animated = True, cmap = 'hsv')) or im)[0].set_array(y)
+        im[0].set_clim(0, 1)
+        ax.set_xlabel(f'level: [{level}]')
+        return im
+
+    matplotlib.animation.FuncAnimation(fig.set_tight_layout(True) or fig, update, frames = sorted(l2r), interval = 1000).save(args.output_path + '.gif', dpi = 80)
+    plt.close(fig)
