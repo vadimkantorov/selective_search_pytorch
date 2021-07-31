@@ -11,7 +11,6 @@ def profileit(func):
 
 import cv2.ximgproc.segmentation
 
-import time
 import math
 import heapq
 import random
@@ -191,7 +190,6 @@ class SelectiveSearch(torch.nn.Module):
         return (reg_lab[b, i, g][..., None] == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1)
 
     def forward(self, img):
-        tic = time.time()
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
         hsv[..., 0, :, :] /= 2.0 * math.pi 
         hsv *= 255.0
@@ -201,14 +199,10 @@ class SelectiveSearch(torch.nn.Module):
         img *= 255.0
         
         imgs = self.images(img, hsv, lab, gray)
-        
-        print('images', time.time() - tic); tic = time.time()
 
         reg_lab = torch.stack([torch.as_tensor(gs.processImage(img.movedim(-3, -1).numpy())) for img in imgs.flatten(end_dim = -4) for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),))
         num_segments = 1 + reg_lab.amax(dim = (-2, -1))
         max_num_segments = int(num_segments.amax())
-        
-        print('graph segmentation', time.time() - tic); tic = time.time()
 
         imgs_normalized_gaussian_grads = normalize_min_max(image_gaussian_grads(imgs.flatten(end_dim = -4)).unflatten(0, imgs.shape[:-3]), dim = (-2, -1))
 
@@ -231,14 +225,8 @@ class SelectiveSearch(torch.nn.Module):
         r0 = r * max_num_segments
         graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((r0 + r1).tolist(), (r0 + r2).tolist()), key = lambda t: t[0])}
         
-        print('features and graph', time.time() - tic); tic = time.time()
-
         regs = [dict(plane_id = (b, i, g, s), id = r1, r = r, level = 1 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[r]), strategy = strategy, ids = {r1}, parent_id = -1) for r, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
-        print('PQ', len(PQ), len(regs))
-        print('init', time.time() - tic)
-        
-        tic = time.time()
         heapq.heapify(PQ)
         
         while PQ:
@@ -253,10 +241,6 @@ class SelectiveSearch(torch.nn.Module):
             features.merge_regions(reg_fro['id'], reg_to['id'], reg_fro['r'])
             for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_id'], features, regs, graph):
                 heapq.heappush(PQ, new_edge)
-        
-        print('loop', time.time() - tic); tic = time.time()
-
-        print('count_merge', features.count_merge, features.time_merge, features.time_merge / features.count_merge * 1000, 'ms | count_measure', features.count_measure, features.time_measure, features.time_measure / features.count_measure * 1000, 'ms')
         
         for reg in regs:
             reg['rank'] = self.compute_region_rank(reg)
@@ -296,11 +280,6 @@ class SelectiveSearch(torch.nn.Module):
 
 class HandcraftedRegionFeatures:
     def __init__(self, imgs : 'B3HW', imgs_normalized_gaussian_grads : 'B23HW', reg_lab : 'BHW', max_num_segments: int, color_hist_bins = 32, texture_hist_bins = 8, neginf = -int(1e9), posinf = int(1e9)):
-        self.count_merge = 0
-        self.count_measure = 0
-        self.time_merge = 0.0
-        self.time_measure = 0.0
-        
         img_channels, img_height, img_width = imgs.shape[-3:]
         self.img_size = img_height * img_width
         self.max_num_segments = max_num_segments
@@ -343,9 +322,7 @@ class HandcraftedRegionFeatures:
             return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
 
         else:
-            self.count_measure += 1
             r0 = r * self.max_num_segments
-            tic = time.time()
             
             res = 0.0
             
@@ -361,13 +338,10 @@ class HandcraftedRegionFeatures:
             if texture > 0:
                 res += texture * float(torch.min(self.texture_hist_[r0 + r1], self.texture_hist_[r0 + r2], out = self.texture_hist_buffer).sum(dim = -1))
 
-            self.time_measure += time.time() - tic
             return res
     
     def merge_regions(self, r1, r2, r):
         r0 = r * self.max_num_segments
-        self.count_merge += 1
-        tic = time.time()
         
         s1, s2 = self.region_sizes_[r0 + r1], self.region_sizes_[r0 + r2]
         s1s2 = s1 + s2
@@ -380,8 +354,6 @@ class HandcraftedRegionFeatures:
         
         self.texture_hist_[r0 + r2].copy_(self.texture_hist_[r0 + r1].mul_(s1).add_(self.texture_hist_[r0 + r2].mul_(s2)).div_(s1s2))
         
-        self.time_merge += time.time() - tic
-
     def expand_and_flatten(self, num_strategies):
         self.region_sizes_ = expand_dim(self.region_sizes, num_strategies, dim = -2).flatten().tolist()
         self.xywh_ = expand_dim(self.xywh, num_strategies, dim = -3).flatten(end_dim = -2).tolist()
