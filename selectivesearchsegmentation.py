@@ -1,5 +1,4 @@
 import cProfile
-
 def profileit(func):
     def wrapper(*args, **kwargs):
         datafn = func.__name__ + ".profile" # Name the data file sensibly
@@ -13,7 +12,6 @@ def profileit(func):
 
 import time
 import math
-import copy
 import heapq
 import random
 import itertools
@@ -155,7 +153,7 @@ class SelectiveSearch(nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
         
     @dataclasses.dataclass(order = True)
-    class Region: rank : float; id : int; level : int; parent_id : int; bbox : tuple; plane_id: tuple; ids : set; strategy : list; s : int; r : int;
+    class Region: rank : float; plane_id: tuple; id : int; r : int; level : int; parent_id : int; bbox : tuple; ids : set; strategy : list
         
     def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', compute_region_rank = lambda region: region.level * random.random()):
         super().__init__()
@@ -193,10 +191,10 @@ class SelectiveSearch(nn.Module):
 
     @staticmethod
     def get_region_mask(reg_lab, region):
-        return (reg_lab[region.plane_id][..., None] == torch.tensor(list(region.ids), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1)
+        b, i, g, *_ = region.plane_id
+        return (reg_lab[b, i, g][..., None] == torch.tensor(list(region.ids), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1)
 
     def forward(self, img):
-       
         tic = time.time()
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
         hsv[..., 0, :, :] /= 2.0 * math.pi 
@@ -240,14 +238,17 @@ class SelectiveSearch(nn.Module):
         def check_sym():
             for u in graph:
                 for v in graph[u]:
-                    assert v in graph
+                    try:
+                        assert v in graph
+                    except:
+                        print('Could not find', v, ':::', u, '->', v)
+                        raise
+
                     assert u in graph[v]
 
         check_sym()
 
-        breakpoint()
-
-        regs = [          self.Region(plane_id = (b, i, g), s = s, id = r1, r = -1, level = 1 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh[b, i, g, r1].tolist()), strategy = strategy, ids = {r1}, parent_id = -1, rank = 0)                  for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(graphadj.shape[2]) for s, strategy in enumerate(self.strategies.tolist()) for r1 in range(graphadj.shape[-2])]
+        regs = [self.Region(plane_id = (b, i, g, s), id = r1, r = r, level = 1 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[r]), strategy = strategy, ids = {r1}, parent_id = -1, rank = 0) for r, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
         print('PQ', len(PQ), len(regs))
         print('init', time.time() - tic)
@@ -262,32 +263,41 @@ class SelectiveSearch(nn.Module):
                 continue
             
             ww = len(regs)
-            graph[ww] = set()
             reg_fro, reg_to = regs[u], regs[v]
-            r, s, strategy = reg_fro.r, reg_fro.s, reg_fro.strategy
+            strategy = reg_fro.strategy
             regs[u].parent_id = regs[v].parent_id = ww
             
-            regs.append(self.Region(id = min(reg_fro.id, reg_to.id), plane_id = reg_fro.plane_id, level = 1 + max(reg_fro.level, reg_to.level), bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), ids = reg_fro.ids | reg_to.ids, parent_id = -1, rank = 0, strategy = strategy, s = s, r = r))
+            regs.append(self.Region(plane_id = reg_fro.plane_id, id = min(reg_fro.id, reg_to.id), r = reg_fro.r, level = 1 + max(reg_fro.level, reg_to.level), bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), strategy = strategy, ids = reg_fro.ids | reg_to.ids, parent_id = -1, rank = 0))
 
-            features.merge_regions(r, reg_fro.id, reg_to.id)
+            features.merge_regions(regs[ww].r, reg_fro.id, reg_to.id)
             
             visited.update([u, v])
             
-            #for uu in [u, v]:
-            #    if u in graph:
-            #        for vv in graph[uu]:
-            #            if vv not in visited:
-            #                heapq.heappush(PQ, (-features.compute_region_affinity(r, regs[ww].id, regs[vv].id, *strategy), ww, vv))
-            #            graph[ww].add(vv)
-            #            graph[vv].add(ww)
-            #            graph[vv].remove(u)
-            #        del graph[uu]
+            check_sym()
+            graph[ww] = set()
+            print('Contracting', u, '<->', v)
+            print('Adding', ww)
+            for uu in [u, v]:
+                if uu in graph:
+                    for vv in graph[uu]:
+                        #if vv not in visited:
+                        #    heapq.heappush(PQ, (-features.compute_region_affinity(regs[ww].r, regs[ww].id, regs[vv].id, *strategy), ww, vv))
+
+                        print('Removing edge', vv, '->', uu)
+                        graph[vv].remove(uu)
+                        print('Adding edge', vv, '<->', ww)
+                        graph[vv].add(ww)
+                        graph[ww].add(vv)
+
+                    print('Removing', uu)
+                    del graph[uu]
+            check_sym()
             
             for _, fro, to in PQ:
                 if (u == fro or u == to) or (v == fro or v == to):
                     vv = to if fro == u or fro == v else fro
                     if vv not in visited:
-                        heapq.heappush(PQ, (-features.compute_region_affinity(r, regs[ww].id, regs[vv].id, *strategy), ww, vv))
+                        heapq.heappush(PQ, (-features.compute_region_affinity(regs[ww].r, regs[ww].id, regs[vv].id, *strategy), ww, vv))
         
         print('loop', time.time() - tic); tic = time.time()
 
@@ -330,12 +340,12 @@ class HandcraftedRegionFeatures:
         self.region_sizes = torch.zeros(reg_lab.shape[:-2] + (self.max_num_segments, ), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z))
         
         Z = (reg_lab[..., None, :, :] * color_histogram_bins + imgs.mul((color_histogram_bins - 1) / 255.0)).flatten(start_dim = -2).to(torch.int64)
-        self.color_histograms = torch.zeros(reg_lab.shape[:-2] + (img_channels, self.max_num_segments * color_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, color_histogram_bins)).movedim(-2, -3).contiguous()
-        self.color_histograms /= self.color_histograms.sum(dim = (-2, -1), keepdim = True)
+        self.color_histograms = torch.zeros(reg_lab.shape[:-2] + (img_channels, self.max_num_segments * color_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, color_histogram_bins)).movedim(-2, -3).flatten(start_dim = -2).contiguous()
+        self.color_histograms /= self.color_histograms.sum(dim = -1, keepdim = True)
 
         Z = (reg_lab[..., None, None, :, :] * texture_histogram_bins + img_normalized_gaussian_derivatives.mul(texture_histogram_bins - 1)).flatten(start_dim = -2).to(torch.int64)
-        self.texture_histograms = torch.zeros(reg_lab.shape[:-2] + (img_channels, img_normalized_gaussian_derivatives.shape[-3], self.max_num_segments * texture_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, texture_histogram_bins)).movedim(-2, -4).contiguous()
-        self.texture_histograms /= self.texture_histograms.sum(dim = (-3, -2, -1), keepdim = True)
+        self.texture_histograms = torch.zeros(reg_lab.shape[:-2] + (img_channels, img_normalized_gaussian_derivatives.shape[-3], self.max_num_segments * texture_histogram_bins), dtype = torch.float32).scatter_add_(-1, Z, ones_like_expand(Z)).unflatten(-1, (self.max_num_segments, texture_histogram_bins)).movedim(-2, -4).flatten(start_dim = -3).contiguous()
+        self.texture_histograms /= self.texture_histograms.sum(dim = -1, keepdim = True)
         
         yx = torch.stack(torch.meshgrid(torch.arange(reg_lab.shape[-2]), torch.arange(reg_lab.shape[-1])))
         mask = (reg_lab.unsqueeze(-1) == torch.arange(self.max_num_segments)).movedim(-1, -3).unsqueeze(-3)
@@ -343,8 +353,8 @@ class HandcraftedRegionFeatures:
         (ymin, xmin), (ymax, xmax) = masked_min.amin(dim = (-2, -1)).unbind(-1), masked_max.amax(dim = (-2, -1)).unbind(-1)
         self.xywh = torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1)
 
-        self.texture_histograms_buffer = torch.empty(self.texture_histograms.shape[-2] * self.texture_histograms.shape[-1]  * self.texture_histograms.shape[-3], dtype = self.texture_histograms.dtype)
-        self.color_histograms_buffer = torch.empty(self.color_histograms.shape[-2] * self.color_histograms.shape[-1], dtype = self.color_histograms.dtype)
+        self.texture_histograms_buffer = torch.empty(self.texture_histograms.shape[-1], dtype = self.texture_histograms.dtype)
+        self.color_histograms_buffer = torch.empty(self.color_histograms.shape[-1], dtype = self.color_histograms.dtype)
     
     def compute_region_affinity(self, r = None, r1 = None, r2 = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
         bbox_size_ = lambda xywh: xywh[..., 2] * xywh[..., 3]
@@ -357,12 +367,12 @@ class HandcraftedRegionFeatures:
             return torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1)
         
         if r1 is None and r2 is None:
-            color_affinity = torch.min(self.color_histograms.unsqueeze(-3), self.color_histograms.unsqueeze(-4)).sum(dim = (-2, -1))
-            texture_affinity = torch.min(self.texture_histograms.unsqueeze(-4), self.texture_histograms.unsqueeze(-5)).sum(dim = (-3, -2, -1))
             size_affinity = (1 - (self.region_sizes.unsqueeze(-1) + self.region_sizes.unsqueeze(-2)).div_(self.img_size)).clamp_(min = 0, max = 1)
             fill_affinity = (1 - (bbox_size_(bbox_merge_(self.xywh.unsqueeze(-2), self.xywh.unsqueeze(-3))) - self.region_sizes.unsqueeze(-1) - self.region_sizes.unsqueeze(-2)) / self.img_size).clamp_(min = 0, max = 1)
-            
+            color_affinity = torch.min(self.color_histograms.unsqueeze(-2), self.color_histograms.unsqueeze(-3)).sum(dim = -1)
+            texture_affinity = torch.min(self.texture_histograms.unsqueeze(-2), self.texture_histograms.unsqueeze(-3)).sum(dim = -1)
             return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
+
         else:
             self.count_measure += 1
             r0 = r * self.max_num_segments
@@ -403,8 +413,8 @@ class HandcraftedRegionFeatures:
     def expand_and_flatten(self, num_strategies):
         self.region_sizes_ = expand_dim(self.region_sizes, num_strategies, dim = -2).flatten().tolist()
         self.xywh_ = expand_dim(self.xywh, num_strategies, dim = -3).flatten(end_dim = -2).tolist()
-        self.color_histograms_ = expand_dim(self.color_histograms, num_strategies, dim = -4).flatten(start_dim = -2).flatten(end_dim = -2)
-        self.texture_histograms_ = expand_dim(self.texture_histograms, num_strategies, dim = -5).flatten(start_dim = -3).flatten(end_dim = -2)
+        self.color_histograms_ = expand_dim(self.color_histograms, num_strategies, dim = -3).flatten(end_dim = -2)
+        self.texture_histograms_ = expand_dim(self.texture_histograms, num_strategies, dim = -3).flatten(end_dim = -2)
 
 if __name__ == '__main__':
     import argparse
@@ -432,6 +442,7 @@ if __name__ == '__main__':
         boxes_xywh, regions, reg_lab = algo(torch.as_tensor(img).movedim(-1, -3).unsqueeze(0) / 255.0)
         mask = algo.get_region_mask(reg_lab, regions[0][args.mask])
         boxes_xywh, regions, reg_lab = boxes_xywh[0], regions[0], reg_lab[0]
+
     else:
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
         algo.setBaseImage(img[..., [2, 1, 0]])
