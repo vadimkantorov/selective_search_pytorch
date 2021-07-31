@@ -143,7 +143,7 @@ def rotated_xywh(img_height, img_width, angle = 45.0, scale = 1.0):
         ])
     rotate = lambda point: (rot @ torch.tensor((point[0], point[1], 1.0), dtype = torch.float32)).tolist()[:2]
 
-    points = map(rotate, [(0, 0), (img_width - 1, 0), (0, img_height - 1), (img_width - 1, img_height - 1)])
+    points = list(map(rotate, [(0, 0), (img_width - 1, 0), (0, img_height - 1), (img_width - 1, img_height - 1)]))
 
     x1, y1 = min(x for x, y in points), min(y for x, y in points)
     x2, y2 = max(x for x, y in points), max(y for x, y in points)
@@ -155,7 +155,7 @@ class SelectiveSearch(nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
         
     @dataclasses.dataclass(order = True)
-    class RegionNode: rank : float; id : int; level : int; parent_id : int; bbox : tuple; plane_id: tuple; img_id: int; ids : set; strategy : list; s : int; r : int;
+    class Region: rank : float; id : int; level : int; parent_id : int; bbox : tuple; plane_id: tuple; ids : set; strategy : list; s : int; r : int;
         
     def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', compute_region_rank = lambda region: region.level * random.random()):
         super().__init__()
@@ -166,8 +166,7 @@ class SelectiveSearch(nn.Module):
         self.preset = preset
         self.compute_region_rank = compute_region_rank
         
-        if self.preset == 'single':
-            #base_k = 200
+        if self.preset == 'single': # base_k = 200
             self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4)
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(base_k), self.min_size)]
             self.strategies = torch.tensor([
@@ -227,7 +226,6 @@ class SelectiveSearch(nn.Module):
 
         print('features and graph', time.time() - tic); tic = time.time()
         
-        tic = time.time()
         ga = graphadj.movedim(-1, -3).flatten(end_dim = -3)
         ga_sparse = ga.to_sparse()
         (r, r1, r2), sim = ga_sparse.indices(), ga_sparse.values()
@@ -249,9 +247,7 @@ class SelectiveSearch(nn.Module):
 
         breakpoint()
 
-        regs = [          SelectiveSearch.RegionNode(id = r1, img_id = b, plane_id = (b, i, g), level = 1 if r1 < int(num_segments[b, i, g]) else 0, bbox = tuple(features.xywh[b, i, g, r1].tolist()), ids = {r1}, parent_id = -1, rank = 0, s = s, strategy = self.strategies[s].tolist(), r = -1)                  for b in range(graphadj.shape[0]) for i in range(graphadj.shape[1]) for g in range(graphadj.shape[2]) for s in range(graphadj.shape[-1]) for r1 in range(graphadj.shape[3])]
-        for i, reg in enumerate(regs):
-            reg.r = i // max_num_segments
+        regs = [          self.Region(plane_id = (b, i, g), s = s, id = r1, r = -1, level = 1 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh[b, i, g, r1].tolist()), strategy = strategy, ids = {r1}, parent_id = -1, rank = 0)                  for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(graphadj.shape[2]) for s, strategy in enumerate(self.strategies.tolist()) for r1 in range(graphadj.shape[-2])]
         
         print('PQ', len(PQ), len(regs))
         print('init', time.time() - tic)
@@ -271,7 +267,7 @@ class SelectiveSearch(nn.Module):
             r, s, strategy = reg_fro.r, reg_fro.s, reg_fro.strategy
             regs[u].parent_id = regs[v].parent_id = ww
             
-            regs.append(SelectiveSearch.RegionNode(id = min(reg_fro.id, reg_to.id), img_id = reg_fro.img_id, plane_id = reg_fro.plane_id, level = 1 + max(reg_fro.level, reg_to.level), bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), ids = reg_fro.ids | reg_to.ids, parent_id = -1, rank = 0, strategy = strategy, s = s, r = r))
+            regs.append(self.Region(id = min(reg_fro.id, reg_to.id), plane_id = reg_fro.plane_id, level = 1 + max(reg_fro.level, reg_to.level), bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), ids = reg_fro.ids | reg_to.ids, parent_id = -1, rank = 0, strategy = strategy, s = s, r = r))
 
             features.merge_regions(r, reg_fro.id, reg_to.id)
             
@@ -299,7 +295,7 @@ class SelectiveSearch(nn.Module):
         
         for reg in regs:
             reg.rank = self.compute_region_rank(reg)
-        key_img_id, key_rank = (lambda reg: reg.img_id), (lambda reg: reg.rank)
+        key_img_id, key_rank = (lambda reg: reg.plane_id[0]), (lambda reg: reg.rank)
         by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg.level >= 1], key = key_img_id), key = key_img_id)}
         without_duplicates = [{reg.bbox : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
         return [list(without_duplicates[b].keys()) for b in range(len(img))], [[by_image[b][i] for i in without_duplicates[b].values()] for b in range(len(img))], reg_lab
