@@ -219,13 +219,14 @@ class SelectiveSearch(nn.Module):
         print('graph segmentation', time.time() - tic); tic = time.time()
         
         img_normalized_gaussian_derivatives = normalize_min_max(image_gaussian_derivatives(imgs.flatten(end_dim = -4)).unflatten(0, imgs.shape[:-3]), dim = (-2, -1))
-        features = HandcraftedRegionFeatures(imgs, img_normalized_gaussian_derivatives, reg_lab)
+        #features = HandcraftedRegionFeatures(imgs, img_normalized_gaussian_derivatives, reg_lab)
         
-        features2 = HandcraftedRegionFeatures2(expand_dim(imgs, reg_lab.shape[2], dim = 2).flatten(end_dim = 2), expand_dim(img_normalized_gaussian_derivatives, reg_lab.shape[2], dim = 2).flatten(end_dim = 2), reg_lab.flatten(end_dim = 2))
+        features = HandcraftedRegionFeatures2(expand_dim(imgs, reg_lab.shape[2], dim = 2).flatten(end_dim = 2), expand_dim(img_normalized_gaussian_derivatives, reg_lab.shape[2], dim = 2).flatten(end_dim = 2), reg_lab.flatten(end_dim = 2))
         
         affinity0 = features.compute_region_affinity()
         
-        graphadj = self.build_graph(reg_lab, max_num_segments = features.max_num_segments)
+        breakpoint()
+        graphadj = self.build_graph(reg_lab, max_num_segments = features.max_num_segments).flatten(end_dim = -3)
         graphadj0 = (graphadj[..., None, None] * affinity0.unsqueeze(-2) * self.strategies).sum(dim = -1)
         graphadj0.masked_fill_(graphadj0.isnan(), 0)
 
@@ -355,6 +356,45 @@ class HandcraftedRegionFeatures2:
 
         self.texture_histograms_buffer = torch.empty(self.texture_histograms.shape[-2] * self.texture_histograms.shape[-1]  * self.texture_histograms.shape[-3], dtype = self.texture_histograms.dtype)
         self.color_histograms_buffer = torch.empty(self.color_histograms.shape[-2] * self.color_histograms.shape[-1], dtype = self.color_histograms.dtype)
+    
+    def compute_region_affinity(self, r = None, r1 = None, r2 = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
+        bbox_size_ = lambda xywh: xywh[..., 2] * xywh[..., 3]
+        bbox_size = lambda xywh: xywh[-2] * xywh[-1]
+        clamp01 = lambda x: max(0, min(1, x))
+
+        def bbox_merge_(xywh1, xywh2):
+            xmin, ymin = torch.min(xywh1[..., 0], xywh2[..., 0]), torch.min(xywh1[..., 1], xywh2[..., 1])
+            xmax, ymax = torch.max(xywh1[..., 0] + xywh1[..., 2] - 1, xywh2[..., 0] + xywh2[..., 2] - 1), torch.max(xywh1[..., 1] + xywh1[..., 3] - 1, xywh2[..., 1] + xywh2[..., 3] - 1)
+            return torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1)
+        
+        if r1 is None and r2 is None:
+            color_affinity = torch.min(self.color_histograms.unsqueeze(-3), self.color_histograms.unsqueeze(-4)).sum(dim = (-2, -1))
+            texture_affinity = torch.min(self.texture_histograms.unsqueeze(-4), self.texture_histograms.unsqueeze(-5)).sum(dim = (-3, -2, -1))
+            size_affinity = (1 - (self.region_sizes.unsqueeze(-1) + self.region_sizes.unsqueeze(-2)).div_(self.img_size)).clamp_(min = 0, max = 1)
+            fill_affinity = (1 - (bbox_size_(bbox_merge_(self.xywh.unsqueeze(-2), self.xywh.unsqueeze(-3))) - self.region_sizes.unsqueeze(-1) - self.region_sizes.unsqueeze(-2)) / self.img_size).clamp_(min = 0, max = 1)
+            
+            return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
+        else:
+            self.count_measure += 1
+            r0 = r * self.max_num_segments
+            tic = time.time()
+            
+            res = 0.0
+            
+            if size > 0:
+                res += size * clamp01(1 - (self.region_sizes_[r0 + r1] + self.region_sizes_[r0 + r2]) / self.img_size)
+            
+            if fill > 0:
+                res += fill * clamp01(1 - (bbox_size(bbox_merge(self.xywh_[r0 + r1], self.xywh_[r0 + r2] )) - self.region_sizes_[r0 + r1] - self.region_sizes_[r0 + r2]) / self.img_size)
+            
+            if color > 0:
+                res += color * float(torch.min(self.color_histograms_[r0 + r1], self.color_histograms_[r0 + r2], out = self.color_histograms_buffer).sum(dim = -1))
+            
+            if texture > 0:
+                res += texture * float(torch.min(self.texture_histograms_[r0 + r1], self.texture_histograms_[r0 + r2], out = self.texture_histograms_buffer).sum(dim = -1))
+
+            self.time_measure += time.time() - tic
+            return res
 
 
 class HandcraftedRegionFeatures:
