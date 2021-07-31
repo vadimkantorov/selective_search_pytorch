@@ -9,18 +9,15 @@ def profileit(func):
 
     return wrapper
 
+import cv2.ximgproc.segmentation
 
 import time
 import math
 import heapq
 import random
 import itertools
-import dataclasses
-
-import cv2.ximgproc.segmentation
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
@@ -149,13 +146,9 @@ def rotated_xywh(img_height, img_width, angle = 45.0, scale = 1.0):
 
     return xywh
 
-class SelectiveSearch(nn.Module):
+class SelectiveSearch(torch.nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
-        
-    @dataclasses.dataclass(order = True)
-    class Region: rank : float; plane_id: tuple; id : int; r : int; level : int; parent_id : int; bbox : tuple; ids : set; strategy : list
-        
-    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', compute_region_rank = lambda region: region.level * random.random()):
+    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', compute_region_rank = lambda reg: reg['level'] * random.random()):
         super().__init__()
         self.base_k = base_k
         self.inc_k = inc_k
@@ -235,20 +228,7 @@ class SelectiveSearch(nn.Module):
         r0 = r * max_num_segments
         graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((r0 + r1).tolist(), (r0 + r2).tolist()), key = lambda t: t[0])}
 
-        def check_sym():
-            for u in graph:
-                for v in graph[u]:
-                    try:
-                        assert v in graph
-                    except:
-                        print('Could not find', v, ':::', u, '->', v)
-                        raise
-
-                    assert u in graph[v]
-
-        check_sym()
-
-        regs = [self.Region(plane_id = (b, i, g, s), id = r1, r = r, level = 1 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[r]), strategy = strategy, ids = {r1}, parent_id = -1, rank = 0) for r, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
+        regs = [dict(plane_id = (b, i, g, s), id = r1, r = r, level = 1 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[r]), strategy = strategy, ids = {r1}, parent_id = -1) for r, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
         print('PQ', len(PQ), len(regs))
         print('init', time.time() - tic)
@@ -262,52 +242,25 @@ class SelectiveSearch(nn.Module):
             if u in visited or v in visited:
                 continue
             
-            ww = len(regs)
             reg_fro, reg_to = regs[u], regs[v]
-            strategy = reg_fro.strategy
-            regs[u].parent_id = regs[v].parent_id = ww
             
-            regs.append(self.Region(plane_id = reg_fro.plane_id, id = min(reg_fro.id, reg_to.id), r = reg_fro.r, level = 1 + max(reg_fro.level, reg_to.level), bbox = bbox_merge(reg_fro.bbox, reg_to.bbox), strategy = strategy, ids = reg_fro.ids | reg_to.ids, parent_id = -1, rank = 0))
-
-            features.merge_regions(regs[ww].r, reg_fro.id, reg_to.id)
+            regs.append(dict(reg_fro, level = 1 + max(reg_fro['level'], reg_to['level']), bbox = bbox_merge(reg_fro['bbox'], reg_to['bbox']), ids = reg_fro['ids'] | reg_to['ids'], id = min(reg_fro['id'], reg_to['id'])))
             
-            visited.update([u, v])
+            reg_fro['parent_id'] = reg_to['parent_id'] = len(regs) - 1
             
-            check_sym()
-            graph[ww] = set()
-            print('Contracting', u, '<->', v)
-            print('Adding', ww)
-            for uu in [u, v]:
-                if uu in graph:
-                    for vv in graph[uu]:
-                        #if vv not in visited:
-                        #    heapq.heappush(PQ, (-features.compute_region_affinity(regs[ww].r, regs[ww].id, regs[vv].id, *strategy), ww, vv))
-
-                        print('Removing edge', vv, '->', uu)
-                        graph[vv].remove(uu)
-                        print('Adding edge', vv, '<->', ww)
-                        graph[vv].add(ww)
-                        graph[ww].add(vv)
-
-                    print('Removing', uu)
-                    del graph[uu]
-            check_sym()
+            features.merge_regions(reg_fro['id'], reg_to['id'], r)
             
-            for _, fro, to in PQ:
-                if (u == fro or u == to) or (v == fro or v == to):
-                    vv = to if fro == u or fro == v else fro
-                    if vv not in visited:
-                        heapq.heappush(PQ, (-features.compute_region_affinity(regs[ww].r, regs[ww].id, regs[vv].id, *strategy), ww, vv))
+            self.contract_graph_edge(u, v, reg_fro['parent_id'], regs, features, visited, graph, PQ)
         
         print('loop', time.time() - tic); tic = time.time()
 
         print('count_merge', features.count_merge, features.time_merge, features.time_merge / features.count_merge * 1000, 'ms | count_measure', features.count_measure, features.time_measure, features.time_measure / features.count_measure * 1000, 'ms')
         
         for reg in regs:
-            reg.rank = self.compute_region_rank(reg)
-        key_img_id, key_rank = (lambda reg: reg.plane_id[0]), (lambda reg: reg.rank)
-        by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg.level >= 1], key = key_img_id), key = key_img_id)}
-        without_duplicates = [{reg.bbox : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
+            reg['rank'] = self.compute_region_rank(reg)
+        key_img_id, key_rank = (lambda reg: reg['plane_id'][0]), (lambda reg: reg['rank'])
+        by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 1], key = key_img_id), key = key_img_id)}
+        without_duplicates = [{reg['bbox'] : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
         return [list(without_duplicates[b].keys()) for b in range(len(img))], [[by_image[b][i] for i in without_duplicates[b].values()] for b in range(len(img))], reg_lab
     
     @staticmethod
@@ -322,6 +275,48 @@ class SelectiveSearch(nn.Module):
         A = torch.sparse_coo_tensor(i, v, reg_lab.shape[:-2] + (max_num_segments, max_num_segments), dtype = torch.int64)
         A += A.transpose(-1, -2)
         return A.coalesce().to(torch.bool).to_dense().triu(diagonal = 1)
+
+    @staticmethod
+    def contract_graph_edge(u, v, ww, regs, features, graph, PQ):
+        def check_sym():
+            for u in graph:
+                for v in graph[u]:
+                    try:
+                        assert v in graph
+                    except:
+                        print('Could not find', v, ':::', u, '->', v)
+                        raise
+
+                    assert u in graph[v]
+
+        #for _, fro, to in PQ:
+        #    if (u == fro or u == to) or (v == fro or v == to):
+        #        vv = to if fro == u or fro == v else fro
+        #        if vv not in visited:
+        #            heapq.heappush(PQ, (-features.compute_region_affinity(regs[ww].r, regs[ww].id, regs[vv].id, *strategy), ww, vv))
+        
+        check_sym()
+        graph[ww] = set()
+        #print('Contracting', u, '<->', v, 'into', ww)
+        for uu, vv in [(u, v), (v, u)]:
+            #print('Processing', uu)
+            if uu in graph:
+                for vvv in graph[uu]:
+                    if vvv == vv:
+                        continue
+
+                    if vvv in graph:
+                        heapq.heappush(PQ, (-features.compute_region_affinity(regs[ww]['id'], regs[vvv]['id'], regs[ww]['r'], *regs[ww]['strategy']), ww, vvv))
+
+                    #print('Removing edge', vvv, '->', uu)
+                    graph[vvv].remove(uu)
+                    #print('Adding edge', vvv, '<->', ww)
+                    graph[vvv].add(ww)
+                    graph[ww].add(vvv)
+
+                #print('Removing', uu)
+                del graph[uu]
+        check_sym()
 
 class HandcraftedRegionFeatures:
     def __init__(self, imgs : 'B3HW', img_normalized_gaussian_derivatives : 'B23HW', reg_lab : 'BHW', max_num_segments: int, color_histogram_bins = 25, texture_histogram_bins = 10, neginf = -int(1e9), posinf = int(1e9)):
@@ -356,7 +351,7 @@ class HandcraftedRegionFeatures:
         self.texture_histograms_buffer = torch.empty(self.texture_histograms.shape[-1], dtype = self.texture_histograms.dtype)
         self.color_histograms_buffer = torch.empty(self.color_histograms.shape[-1], dtype = self.color_histograms.dtype)
     
-    def compute_region_affinity(self, r = None, r1 = None, r2 = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
+    def compute_region_affinity(self, r1 = None, r2 = None, r = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
         bbox_size_ = lambda xywh: xywh[..., 2] * xywh[..., 3]
         bbox_size = lambda xywh: xywh[-2] * xywh[-1]
         clamp01 = lambda x: max(0, min(1, x))
@@ -395,7 +390,7 @@ class HandcraftedRegionFeatures:
             self.time_measure += time.time() - tic
             return res
     
-    def merge_regions(self, r, r1, r2):
+    def merge_regions(self, r1, r2, r):
         r0 = r * self.max_num_segments
         self.count_merge += 1
         tic = time.time()
