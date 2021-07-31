@@ -65,7 +65,7 @@ def rgb_to_lab(image):
         # https://github.com/kornia/kornia/blob/master/kornia/color/rgb.py
         return torch.where(image > 0.04045, torch.pow(((image + 0.055) / 1.055), 2.4), image / 12.92)
 
-    # Convert from sRGB to Linear RGB
+    # Convert begin sRGB to Linear RGB
     lin_rgb = rgb_to_linear_rgb(image)
 
     xyz_im = rgb_to_xyz(lin_rgb)
@@ -126,7 +126,7 @@ def expand_ones_like(tensor, dtype = torch.float32):
 
 def bbox_merge(xywh1, xywh2):
     x1, y1 = min(xywh1[0], xywh2[0]), min(xywh1[1], xywh2[1])
-    x2, y2 = max(xywh1[0] + xywh1[2], xywh2[0] + xywh2[2]), max(xywh1[1] + xywh1[3], xywh2[1] + xywh2[3])
+    x2, y2 = max(xywh1[0] + xywh1[2] - 1, xywh2[0] + xywh2[2] - 1), max(xywh1[1] + xywh1[3] - 1, xywh2[1] + xywh2[3] - 1)
     return (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
 
 def rotated_xywh(img_height, img_width, angle = 45.0, scale = 1.0):
@@ -167,7 +167,8 @@ class SelectiveSearch(torch.nn.Module):
             ])
             
         elif self.preset == 'fast':
-            self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv, lab], dim = -4)
+            #self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv, lab], dim = -4)
+            self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4)
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
             self.strategies = torch.tensor([
                 [0.25, 0.25, 0.25, 0.25],
@@ -225,7 +226,7 @@ class SelectiveSearch(torch.nn.Module):
         r0 = r * max_num_segments
         graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((r0 + r1).tolist(), (r0 + r2).tolist()), key = lambda t: t[0])}
         
-        regs = [dict(plane_id = (b, i, g, s), id = r1, r = r, level = 1 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[r]), strategy = strategy, ids = {r1}, parent_id = -1) for r, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
+        regs = [dict(plane_id = (b, i, g, s), id = r1, r = r, level = 1 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[r * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for r, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
         heapq.heapify(PQ)
         
@@ -305,7 +306,7 @@ class HandcraftedRegionFeatures:
         self.color_hist_buffer = torch.empty(self.color_hist.shape[-1], dtype = self.color_hist.dtype)
     
     def compute_region_affinity(self, r1 = None, r2 = None, r = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
-        bbox_size_ = lambda xywh: xywh[..., 2] * xywh[..., 3]
+        bbox_size_ = lambda xywh: xywh[..., -2] * xywh[..., -1]
         bbox_size = lambda xywh: xywh[-2] * xywh[-1]
         clamp01 = lambda x: max(0, min(1, x))
 
@@ -330,7 +331,7 @@ class HandcraftedRegionFeatures:
                 res += size * clamp01(1 - (self.region_sizes_[r0 + r1] + self.region_sizes_[r0 + r2]) / self.img_size)
             
             if fill > 0:
-                res += fill * clamp01(1 - (bbox_size(bbox_merge(self.xywh_[r0 + r1], self.xywh_[r0 + r2] )) - self.region_sizes_[r0 + r1] - self.region_sizes_[r0 + r2]) / self.img_size)
+                res += fill * clamp01(1 - (bbox_size(bbox_merge(self.xywh_[r0 + r1], self.xywh_[r0 + r2])) - self.region_sizes_[r0 + r1] - self.region_sizes_[r0 + r2]) / self.img_size)
             
             if color > 0:
                 res += color * float(torch.min(self.color_hist_[r0 + r1], self.color_hist_[r0 + r2], out = self.color_hist_buffer).sum(dim = -1))
@@ -350,7 +351,7 @@ class HandcraftedRegionFeatures:
 
         self.xywh_[r0 + r2] = self.xywh_[r0 + r1] = bbox_merge(self.xywh_[r0 + r1], self.xywh_[r0 + r2])
         
-        self.color_hist_[r0 + r2].copy_(self.color_hist_[r0 + r1].mul_(s1).add_(self.color_hist_[r0 + r2].mul_(s2).div_(s1s2)))
+        self.color_hist_[r0 + r2].copy_(self.color_hist_[r0 + r1].mul_(s1).add_(self.color_hist_[r0 + r2].mul_(s2)).div_(s1s2))
         
         self.texture_hist_[r0 + r2].copy_(self.texture_hist_[r0 + r1].mul_(s1).add_(self.texture_hist_[r0 + r2].mul_(s2)).div_(s1s2))
         
@@ -373,7 +374,8 @@ if __name__ == '__main__':
     parser.add_argument('--preset', choices = ['fast', 'quality', 'single'], default = 'fast')
     parser.add_argument('--opencv', action = 'store_true')
     parser.add_argument('--seed', type = int, default = 42)
-    parser.add_argument('--mask', type = int, default = 0)
+    parser.add_argument('--begin', type = int, default = 0)
+    parser.add_argument('--grid', type = int, default = 4)
     args = parser.parse_args()
     args.fast = True
 
@@ -384,17 +386,21 @@ if __name__ == '__main__':
     if not args.opencv:
         algo = SelectiveSearch(preset = args.preset)
         boxes_xywh, regions, reg_lab = algo(torch.as_tensor(img).movedim(-1, -3).unsqueeze(0) / 255.0)
-        mask = algo.get_region_mask(reg_lab, regions[0][args.mask])
-        boxes_xywh, regions, reg_lab = boxes_xywh[0], regions[0], reg_lab[0]
+        breakpoint()
+        mask = lambda k: algo.get_region_mask(reg_lab, regions[0][k])
+        boxes_xywh = boxes_xywh[0]
 
     else:
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
         algo.setBaseImage(img[..., [2, 1, 0]])
         dict(fast = algo.switchToSelectiveSearchFast, quality = algo.switchToSelectiveSearchQuality, single = algo.switchToSingleStrategy)[args.preset]()
         boxes_xywh = algo.process()
-        x, y, w, h = boxes_xywh[args.mask]
-        mask = torch.zeros(img.shape[:-1])
-        mask[y : y + h, x : x + w] = 1
+        
+        def mask(k):
+            x, y, w, h = boxes_xywh[k]
+            res = torch.zeros(img.shape[:-1])
+            res[y : y + h, x : x + w] = 1
+            return res
 
     print('boxes', len(boxes_xywh))
     print('height:', img.shape[0], 'width:', img.shape[1])
@@ -403,14 +409,21 @@ if __name__ == '__main__':
     #N = 1 + int(reg_lab.max())
     #colors = torch.tensor(list(map(lambda c: colorsys.hsv_to_rgb(*c), [(i / N, 1, 1) for i in range(N)])))
     #plt.imshow(colors[reg_lab[0, 0, 0].to(torch.int64)])
-    
-    plt.figure()
-    plt.subplot(121)
-    plt.imshow(img * mask[..., None].numpy() + img * (1 - mask[..., None].numpy()) // 5)
+
+    plt.figure(figsize = (args.grid, args.grid))
+    plt.subplot(args.grid, args.grid, 1)
+    plt.imshow(img, aspect = 'auto')
     plt.axis('off')
-    for x, y, w, h in boxes_xywh[:args.topk]:
+    for x, y, w, h in boxes_xywh[args.begin:args.grid * args.grid - 1]:
         plt.gca().add_patch(matplotlib.patches.Rectangle((x, y), w, h, linewidth = 1, edgecolor = 'r', facecolor = 'none'))
-    plt.subplot(122)
-    plt.imshow(mask.to(torch.float32))
+    
+    for k in range(args.grid * args.grid - 1):
+        plt.subplot(args.grid, args.grid, 2 + k)
+        m = mask(args.begin + k).to(torch.float32)
+        x, y, w, h = boxes_xywh[k]
+        plt.imshow((img * m[..., None].numpy() + img * (1 - m[..., None].numpy()) // 10).astype('uint8'), aspect = 'auto')
+        plt.gca().add_patch(matplotlib.patches.Rectangle((x, y), w, h, linewidth = 1, edgecolor = 'r', facecolor = 'none'))
+        plt.axis('off')
+
+    plt.subplots_adjust(0, 0, 1, 1, wspace = 0, hspace = 0)
     plt.savefig(args.output_path)
-    plt.close()
