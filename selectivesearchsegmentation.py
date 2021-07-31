@@ -183,9 +183,9 @@ class SelectiveSearch(torch.nn.Module):
             ])
 
     @staticmethod
-    def get_region_mask(reg_lab, region):
-        b, i, g, *_ = region.plane_id
-        return (reg_lab[b, i, g][..., None] == torch.tensor(list(region.ids), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1)
+    def get_region_mask(reg_lab, reg):
+        b, i, g, *_ = reg['plane_id']
+        return (reg_lab[b, i, g][..., None] == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1)
 
     def forward(self, img):
         tic = time.time()
@@ -234,23 +234,20 @@ class SelectiveSearch(torch.nn.Module):
         print('init', time.time() - tic)
         
         tic = time.time()
-        visited = set()
         heapq.heapify(PQ)
         
         while PQ:
             negsim, u, v = heapq.heappop(PQ)
-            if u in visited or v in visited:
+            if u not in graph or v not in graph:
                 continue
             
             reg_fro, reg_to = regs[u], regs[v]
-            
             regs.append(dict(reg_fro, level = 1 + max(reg_fro['level'], reg_to['level']), bbox = bbox_merge(reg_fro['bbox'], reg_to['bbox']), ids = reg_fro['ids'] | reg_to['ids'], id = min(reg_fro['id'], reg_to['id'])))
-            
             reg_fro['parent_id'] = reg_to['parent_id'] = len(regs) - 1
             
-            features.merge_regions(reg_fro['id'], reg_to['id'], r)
-            
-            self.contract_graph_edge(u, v, reg_fro['parent_id'], regs, features, visited, graph, PQ)
+            features.merge_regions(reg_fro['id'], reg_to['id'], reg_fro['r'])
+            for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_id'], features, regs, graph):
+                heapq.heappush(PQ, new_edge)
         
         print('loop', time.time() - tic); tic = time.time()
 
@@ -277,46 +274,20 @@ class SelectiveSearch(torch.nn.Module):
         return A.coalesce().to(torch.bool).to_dense().triu(diagonal = 1)
 
     @staticmethod
-    def contract_graph_edge(u, v, ww, regs, features, graph, PQ):
-        def check_sym():
-            for u in graph:
-                for v in graph[u]:
-                    try:
-                        assert v in graph
-                    except:
-                        print('Could not find', v, ':::', u, '->', v)
-                        raise
-
-                    assert u in graph[v]
-
-        #for _, fro, to in PQ:
-        #    if (u == fro or u == to) or (v == fro or v == to):
-        #        vv = to if fro == u or fro == v else fro
-        #        if vv not in visited:
-        #            heapq.heappush(PQ, (-features.compute_region_affinity(regs[ww].r, regs[ww].id, regs[vv].id, *strategy), ww, vv))
-        
-        check_sym()
+    def contract_graph_edge(u, v, ww, features, regs, graph):
         graph[ww] = set()
-        #print('Contracting', u, '<->', v, 'into', ww)
-        for uu, vv in [(u, v), (v, u)]:
-            #print('Processing', uu)
-            if uu in graph:
-                for vvv in graph[uu]:
-                    if vvv == vv:
-                        continue
+        new_edges = []
+        for uu in [u, v]:
+            for vv in graph.pop(uu, []):
+                if vv == u or vv == v:
+                    continue
 
-                    if vvv in graph:
-                        heapq.heappush(PQ, (-features.compute_region_affinity(regs[ww]['id'], regs[vvv]['id'], regs[ww]['r'], *regs[ww]['strategy']), ww, vvv))
+                new_edges.append((-features.compute_region_affinity(regs[ww]['id'], regs[vv]['id'], regs[ww]['r'], *regs[ww]['strategy']), ww, vv))
 
-                    #print('Removing edge', vvv, '->', uu)
-                    graph[vvv].remove(uu)
-                    #print('Adding edge', vvv, '<->', ww)
-                    graph[vvv].add(ww)
-                    graph[ww].add(vvv)
-
-                #print('Removing', uu)
-                del graph[uu]
-        check_sym()
+                graph[vv].remove(uu)
+                graph[vv].add(ww)
+                graph[ww].add(vv)
+        return new_edges
 
 class HandcraftedRegionFeatures:
     def __init__(self, imgs : 'B3HW', img_normalized_gaussian_derivatives : 'B23HW', reg_lab : 'BHW', max_num_segments: int, color_histogram_bins = 25, texture_histogram_bins = 10, neginf = -int(1e9), posinf = int(1e9)):
