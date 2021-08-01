@@ -359,7 +359,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--input-path', '-i')
     parser.add_argument('--output-path', '-o')
-    parser.add_argument('--topk', type = int, default = 30)
+    parser.add_argument('--topk', type = int, default = 64)
     parser.add_argument('--preset', choices = ['fast', 'quality', 'single'], default = 'fast')
     parser.add_argument('--opencv', action = 'store_true')
     parser.add_argument('--seed', type = int, default = 42)
@@ -406,7 +406,7 @@ if __name__ == '__main__':
     plt.subplot(args.grid, args.grid, 1)
     plt.imshow(img, aspect = 'auto')
     plt.axis('off')
-    for x, y, w, h in boxes_xywh[args.begin:args.grid * args.grid - 1]:
+    for x, y, w, h in boxes_xywh[args.begin : args.begin + args.topk]:
         plt.gca().add_patch(matplotlib.patches.Rectangle((x, y), w, h, linewidth = 1, edgecolor = 'r', facecolor = 'none'))
     
     for k in range(args.grid * args.grid - 1):
