@@ -30,6 +30,8 @@ python3 selectivesearchsegmentation.py -i astronaut.jpg -o test.png
 - implement more straightforward HoG descriptor instead of gaussian derivatives with explicit rotation as in:
     - https://github.com/saisrivatsan/selective-search/blob/dc6f327fd58757099c69c9f76d247b4a16be962a/hist.py#L13
 
+- replace Python sets by Python bitsets-via-bignums to store lists of merged regions
+
 - implement color space treatment as in:
     - https://github.com/smanenfr/rp/blob/4bef556593781ef3866f646531d4e854fea0dcd8/src/rp.h#L40
 
