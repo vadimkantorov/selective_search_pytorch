@@ -44,6 +44,8 @@ python3 selectivesearchsegmentation.py -i astronaut.jpg -o test.png
 - https://github.com/smanenfr/rp/
 
 ### Credits
+I copied some Kornia's color conversion utils: https://kornia.readthedocs.io/en/latest/color.html
+
 ```
 @article{Uijlings13,
   author = {J.R.R. Uijlings and K.E.A. van de Sande and T. Gevers and A.W.M. Smeulders},
