@@ -2,10 +2,9 @@ Selective Search **[Uijlings13]** reimplementation in Python / PyTorch
 
 Feature computation and region merging loop is done in Python / PyTorch. The underlying graph segmentation **[Felzenszwalb2004]** is still OpenCV's [cv2.ximgproc.segmentation.createGraphSegmentation](https://docs.opencv.org/master/d5/df0/group__ximgproc__segmentation.html#ga5e3e721c5f16e34d3ad52b9eeb6d2860).
 
+This reimplementation follows the OpenCV's [cv2.ximgproc.segmentation.createSelectiveSearchSegmentation](https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp).
 
-
-https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
-
+### Usage
 ```shell
 pip install opencv-python opencv-contrib-python
 
@@ -16,6 +15,11 @@ python3 selectivesearchsegmentation.py -i astronaut.jpg -o test.png
 
 # open test.png and test.png.gif
 ```
+### test.png
+![test.png](https://user-images.githubusercontent.com/1041752/127770397-6f6ab661-615b-491e-ad61-039bced3fdd1.png)
+
+### test.png.gif
+![test.png.gif](https://user-images.githubusercontent.com/1041752/127770399-e0133e08-0f48-44ea-8648-19ac7594556c.gif)
 
 ### TODO
 - implement more straightforward HoG descriptor instead of gaussian derivatives with explicit rotation as in:
