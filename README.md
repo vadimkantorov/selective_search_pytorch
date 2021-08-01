@@ -1,4 +1,4 @@
-# Selective Search **[Uijlings13]** reimplementation in Python / PyTorch
+# Selective Search **[Uijlings13]** reimplementation in PyTorch
 
 It allows to extract not only the bounding boxes, but also the region masks.
 
