@@ -1,3 +1,5 @@
+import cv2.ximgproc.segmentation
+
 import math
 import heapq
 import random
@@ -178,9 +180,8 @@ class SelectiveSearch(torch.nn.Module):
             ])
 
     @staticmethod
-    def get_region_mask(reg_lab, reg):
-        b, i, g, *_ = reg['plane_id']
-        return (reg_lab[b, i, g][..., None] == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1)
+    def get_region_mask(reg_lab, regs):
+        return torch.stack([(reg_lab[reg['plane_id'][:-1]][..., None] == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
 
     def forward(self, img):
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
@@ -209,16 +210,16 @@ class SelectiveSearch(torch.nn.Module):
 
         ga = graphadj.movedim(-1, -3).flatten(end_dim = -3)
         ga_sparse = ga.to_sparse()
-        (r, r1, r2), sim = ga_sparse.indices(), ga_sparse.values()
-        plane_idx = r * max_num_segments
+        (plane_idx, r1, r2), sim = ga_sparse.indices(), ga_sparse.values()
+        plane_idx *= max_num_segments
         PQ = list(zip(sim.neg().tolist(), (plane_idx + r1).tolist(), (plane_idx + r2).tolist()))
         
         gasym_sparse = (ga + ga.transpose(-2, -1)).to_sparse()
-        (r, r1, r2), sim = gasym_sparse.indices(), gasym_sparse.values()
-        plane_idx = r * max_num_segments
+        (plane_idx, r1, r2), sim = gasym_sparse.indices(), gasym_sparse.values()
+        plane_idx *= max_num_segments
         graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((plane_idx + r1).tolist(), (plane_idx + r2).tolist()), key = lambda t: t[0])}
         
-        regs = [dict(plane_id = (b, i, g, s), id = r1, plane_idx = plane_idx, level = 0 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[r * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for plane_idx, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
+        regs = [dict(plane_id = (b, i, g, s), id = r1, plane_idx = plane_idx, level = 0 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[plane_idx * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for plane_idx, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
         heapq.heapify(PQ)
         
@@ -312,7 +313,7 @@ class HandcraftedRegionFeatures:
             return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
 
         else:
-            plane_idx = r * self.max_num_segments
+            plane_idx *= self.max_num_segments
             
             res = 0.0
             
@@ -374,7 +375,7 @@ if __name__ == '__main__':
     if not args.opencv:
         algo = SelectiveSearch(preset = args.preset)
         boxes_xywh, regions, reg_lab = algo(torch.as_tensor(img).movedim(-1, -3).unsqueeze(0) / 255.0)
-        mask = lambda k: algo.get_region_mask(reg_lab, regions[0][k])
+        mask = lambda k: algo.get_region_mask(reg_lab, [regions[0][k]])[0]
         boxes_xywh = boxes_xywh[0]
         key_level = lambda reg: reg['level']
         level2regions = lambda plane_id: {k : list(g) for k, g in itertools.groupby(sorted([reg for reg in regions[0] if reg['plane_id'] == tuple(plane_id)], key = key_level), key = key_level)}
@@ -394,6 +395,7 @@ if __name__ == '__main__':
 
     max_num_segments = 1 + max(reg['id'] for reg in regions[0])
     l2r = level2regions(plane_id = args.plane_id)
+    reg_lab_ = reg_lab[tuple(args.plane_id)[:-1]].clone()
 
     print('boxes', len(boxes_xywh))
     print('height:', img.shape[0], 'width:', img.shape[1])
@@ -424,12 +426,10 @@ if __name__ == '__main__':
     fig, ax = plt.subplots()
     plt.subplots_adjust(0, 0, 1, 1)
     def update(level, im = []):
-        reg_lab_ = reg_lab[tuple(args.plane_id)[:-1]].clone()
         for reg in l2r[level]:
             min_id = min(reg['ids'])
             for id in reg['ids']:
                 reg_lab_[reg_lab_ == id] = min_id
-        
         y = reg_lab_ / max_num_segments
 
         (im or im.append(plt.imshow(y, animated = True, cmap = 'hsv')) or im)[0].set_array(y)
