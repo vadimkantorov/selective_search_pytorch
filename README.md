@@ -24,6 +24,9 @@ python3 selectivesearchsegmentation.py -i astronaut.jpg -o test.png
 ![test.png.gif](https://user-images.githubusercontent.com/1041752/127770399-e0133e08-0f48-44ea-8648-19ac7594556c.gif)
 
 ### TODO
+- implement stochastic region merging option as in:
+    - https://github.com/smanenfr/rp/
+
 - implement more straightforward HoG descriptor instead of gaussian derivatives with explicit rotation as in:
     - https://github.com/saisrivatsan/selective-search/blob/dc6f327fd58757099c69c9f76d247b4a16be962a/hist.py#L13
 
@@ -47,7 +50,6 @@ python3 selectivesearchsegmentation.py -i astronaut.jpg -o test.png
 - https://github.com/belltailjp/selective_search_py
 - https://github.com/saisrivatsan/selective-search
 - https://github.com/ChenjieXu/selective_search
-- https://github.com/smanenfr/rp/
 
 ### Credits
 I copied some Kornia's color conversion utils: https://kornia.readthedocs.io/en/latest/color.html
