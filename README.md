@@ -1,6 +1,6 @@
-Selective Search [Uijlings13] reimplementation in Python / PyTorch
+Selective Search **[Uijlings13]** reimplementation in Python / PyTorch
 
-Feature computation and region merging loop is done in Python / PyTorch. The underlying graph segmentation [Felzenszwalb2004] is still OpenCV's [cv2.ximgproc.segmentation.createGraphSegmentation](https://docs.opencv.org/master/d5/df0/group__ximgproc__segmentation.html#ga5e3e721c5f16e34d3ad52b9eeb6d2860).
+Feature computation and region merging loop is done in Python / PyTorch. The underlying graph segmentation **[Felzenszwalb2004]** is still OpenCV's [cv2.ximgproc.segmentation.createGraphSegmentation](https://docs.opencv.org/master/d5/df0/group__ximgproc__segmentation.html#ga5e3e721c5f16e34d3ad52b9eeb6d2860).
 
 
 
