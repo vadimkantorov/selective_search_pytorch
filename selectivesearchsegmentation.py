@@ -161,7 +161,6 @@ class SelectiveSearch(torch.nn.Module):
             ])
             
         elif self.preset == 'fast':
-            #self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv, lab], dim = -4)
             self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4)
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
             self.strategies = torch.tensor([
@@ -184,6 +183,8 @@ class SelectiveSearch(torch.nn.Module):
         return torch.stack([(reg_lab[reg['plane_id'][:-1]][..., None] == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
 
     def forward(self, img):
+        assert img.is_floating_point()
+
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
         hsv[..., 0, :, :] /= 2.0 * math.pi 
         hsv *= 255.0
@@ -423,8 +424,10 @@ if __name__ == '__main__':
     if not l2r:
         pass
 
-    fig, ax = plt.subplots()
-    plt.subplots_adjust(0, 0, 1, 1)
+    fig = plt.figure(figsize = (args.grid, args.grid))
+    fig.set_tight_layout(True)
+    #fig.subplots_adjust(0, 0, 1, 1, wspace = 0, hspace = 0)
+
     def update(level, im = []):
         for reg in l2r[level]:
             min_id = min(reg['ids'])
@@ -432,10 +435,14 @@ if __name__ == '__main__':
                 reg_lab_[reg_lab_ == id] = min_id
         y = reg_lab_ / max_num_segments
 
-        (im or im.append(plt.imshow(y, animated = True, cmap = 'hsv')) or im)[0].set_array(y)
+        if not im:
+            im.append(plt.imshow(y, animated = True, cmap = 'hsv', aspect = 'auto'))
+            plt.axis('off')
+
+        im[0].set_array(y)
         im[0].set_clim(0, 1)
-        ax.set_xlabel(f'level: [{level}]')
+        plt.suptitle(f'level: [{level}]')
         return im
 
-    matplotlib.animation.FuncAnimation(fig.set_tight_layout(True) or fig, update, frames = sorted(l2r), interval = 1000).save(args.output_path + '.gif', dpi = 80)
+    matplotlib.animation.FuncAnimation(fig, update, frames = sorted(l2r), interval = 1000).save(args.output_path + '.gif', dpi = 80)
     plt.close(fig)
