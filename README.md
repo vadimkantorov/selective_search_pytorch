@@ -2,7 +2,9 @@ Selective Search **[Uijlings13]** reimplementation in Python / PyTorch that allo
 
 Feature computation and region merging loop is done in Python / PyTorch. The underlying graph segmentation **[Felzenszwalb2004]** is still OpenCV's [cv2.ximgproc.segmentation.createGraphSegmentation](https://docs.opencv.org/master/d5/df0/group__ximgproc__segmentation.html#ga5e3e721c5f16e34d3ad52b9eeb6d2860).
 
-This reimplementation follows the OpenCV's [cv2.ximgproc.segmentation.createSelectiveSearchSegmentation](https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp).
+This reimplementation follows the OpenCV's [cv2.ximgproc.segmentation.createSelectiveSearchSegmentation](https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp). This reimplementation is slower than the original C++ (mainly due to region merging loop in Python, and PyTorch's slower computation of histogram distances), but allows for simpler experimentation.
+
+Most of implementation should be running fine on GPU, but it is not tested yet (and the graph segmentation currently runs only on CPU anyway).
 
 ### Usage
 ```shell
