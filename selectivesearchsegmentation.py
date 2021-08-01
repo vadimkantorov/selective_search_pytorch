@@ -232,9 +232,7 @@ class SelectiveSearch(torch.nn.Module):
             reg_fro, reg_to = regs[u], regs[v]
             regs.append(dict(reg_fro, level = 1 + max(reg_fro['level'], reg_to['level']), ids = reg_fro['ids'] | reg_to['ids'], id = min(reg_fro['id'], reg_to['id'])))
             reg_fro['parent_id'] = reg_to['parent_id'] = len(regs) - 1
-            
-            features.merge_regions(reg_fro['id'], reg_to['id'], reg_fro['plane_idx'])
-            regs[-1]['bbox'] = tuple(features.xywh_[regs[-1]['plane_idx'] * max_num_segments + regs[-1]['id']])
+            regs[-1]['bbox'] = features.merge_regions(reg_fro['id'], reg_to['id'], reg_fro['plane_idx'])
 
             for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_id'], features, regs, graph):
                 heapq.heappush(PQ, new_edge)
@@ -332,8 +330,8 @@ class HandcraftedRegionFeatures:
 
             return res
     
-    def merge_regions(self, r1, r2, r):
-        plane_idx = r * self.max_num_segments
+    def merge_regions(self, r1, r2, plane_idx):
+        plane_idx *= self.max_num_segments
         
         s1, s2 = self.region_sizes_[plane_idx + r1], self.region_sizes_[plane_idx + r2]
         s1s2 = s1 + s2
@@ -345,6 +343,8 @@ class HandcraftedRegionFeatures:
         self.color_hist_[plane_idx + r2].copy_(self.color_hist_[plane_idx + r1].mul_(s1).add_(self.color_hist_[plane_idx + r2].mul_(s2)).div_(s1s2))
         
         self.texture_hist_[plane_idx + r2].copy_(self.texture_hist_[plane_idx + r1].mul_(s1).add_(self.texture_hist_[plane_idx + r2].mul_(s2)).div_(s1s2))
+        return self.xywh_[plane_idx + r2]
+
         
     def expand_and_flatten(self, num_strategies):
         self.region_sizes_ = expand_dim(self.region_sizes, num_strategies, dim = -2).flatten().tolist()
