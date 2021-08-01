@@ -367,8 +367,7 @@ if __name__ == '__main__':
     parser.add_argument('--grid', type = int, default = 4)
     parser.add_argument('--plane-id', type = int, nargs = 4, default = [0, 0, 0, 0])
     args = parser.parse_args()
-    args.fast = True
-
+    
     random.seed(args.seed)
 
     img = plt.imread(args.input_path).copy()
