@@ -19,6 +19,9 @@ python3 selectivesearchsegmentation.py -i astronaut.jpg -o test.png
 
 # open test.png and test.png.gif
 ```
+### astronaut.jpg
+![astronaut.jpg](https://user-images.githubusercontent.com/1041752/127776719-f8abfd60-6640-48fb-8b70-a1b6f6ade5cf.jpg)
+
 ### test.png
 ![test.png](https://user-images.githubusercontent.com/1041752/127772794-9be6ec05-55cc-4787-99e7-ee31926e41c0.png)
 
