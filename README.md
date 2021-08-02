@@ -51,6 +51,7 @@ python3 selectivesearchsegmentation.py -i astronaut.jpg -o test.png
 - compute color / texture histograms in uint8
 - replace with uint8 histogram computation: https://github.com/pytorch/pytorch/issues/61819 https://github.com/pytorch/pytorch/issues/32306 https://github.com/pytorch/pytorch/issues/43867 
 - replace histogram distance to be in uint8 when uint8 aggregation is available: https://github.com/pytorch/pytorch/issues/55366
+- could PyTorch jit the region merging loop?
 
 ### References
 - https://github.com/AlpacaDB/selectivesearch/, https://github.com/vsakkas/selective-search
