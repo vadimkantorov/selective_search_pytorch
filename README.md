@@ -92,3 +92,5 @@ I copied some Kornia's color conversion utils: https://kornia.readthedocs.io/en/
 -  https://github.com/davidstutz/graph-based-image-segmentation
 -  https://github.com/luisgabriel/image-segmentation
 -  https://infoscience.epfl.ch/record/177415
+-  https://www.morethantechnical.com/2010/05/05/bust-out-your-own-graphcut-based-image-segmentation-with-opencv-w-code/
+-  https://www.morethantechnical.com/2017/10/30/revisiting-graph-cut-segmentation-with-slic-and-color-histograms-wpython/
