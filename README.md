@@ -86,3 +86,8 @@ I copied some Kornia's color conversion utils: https://kornia.readthedocs.io/en/
   url = {https://openaccess.thecvf.com/content_iccv_2013/papers/Manen_Prime_Object_Proposals_2013_ICCV_paper.pdf}
 }
 ```
+
+### More references
+-  https://github.com/davidstutz/graph-based-image-segmentation
+-  https://github.com/luisgabriel/image-segmentation
+-  https://infoscience.epfl.ch/record/177415
