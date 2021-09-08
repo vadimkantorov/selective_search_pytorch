@@ -144,14 +144,15 @@ def bbox_merge(xywh1, xywh2):
 
 class SelectiveSearch(torch.nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
-    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', compute_region_rank = lambda reg: reg['level'] * random.random()):
+    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', compute_region_rank = None, postprocess_labels = None):
         super().__init__()
         self.base_k = base_k
         self.inc_k = inc_k
         self.sigma = sigma
         self.min_size = min_size
         self.preset = preset
-        self.compute_region_rank = compute_region_rank
+        self.compute_region_rank = compute_region_rank if compute_region_rank is not None else (lambda reg: reg['level'] * random.random())
+        self.postprocess_labels = postprocess_labels if postprocess_labels is not None else (lambda reg_lab: reg_lab)
         
         if self.preset == 'single': # base_k = 200
             self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4)
@@ -183,6 +184,7 @@ class SelectiveSearch(torch.nn.Module):
         return torch.stack([(reg_lab[reg['plane_id'][:-1]][..., None] == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
 
     def forward(self, img : 'B3HW'):
+        img = torch.as_tensor(img).contiguous()
         assert img.is_floating_point()
 
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
@@ -196,6 +198,7 @@ class SelectiveSearch(torch.nn.Module):
         imgs = self.images(img, hsv, lab, gray)
 
         reg_lab = torch.stack([torch.as_tensor(gs.processImage(img.movedim(-3, -1).numpy())) for img in imgs.flatten(end_dim = -4) for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),))
+        reg_lab = self.postprocess_labels(reg_lab)
         num_segments = 1 + reg_lab.amax(dim = (-2, -1))
         max_num_segments = int(num_segments.amax())
 
@@ -242,7 +245,7 @@ class SelectiveSearch(torch.nn.Module):
         key_img_id, key_rank = (lambda reg: reg['plane_id'][0]), (lambda reg: reg['rank'])
         by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 0], key = key_img_id), key = key_img_id)}
         without_duplicates = [{reg['bbox'] : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
-        return [list(without_duplicates[b].keys()) for b in range(len(img))], [[by_image[b][i] for i in without_duplicates[b].values()] for b in range(len(img))], reg_lab
+        return [torch.as_tensor(list(without_duplicates[b].keys()), dtype = torch.int16) for b in range(len(img))], [[by_image[b][i] for i in without_duplicates[b].values()] for b in range(len(img))], reg_lab
     
     @staticmethod
     def build_graph(reg_lab : 'BIGHW', max_num_segments : int):
@@ -274,7 +277,7 @@ class SelectiveSearch(torch.nn.Module):
         return new_edges
 
 class HandcraftedRegionFeatures:
-    def __init__(self, imgs : 'B3HW', imgs_normalized_gaussian_grads : 'B23HW', reg_lab : 'BHW', max_num_segments: int, color_hist_bins = 32, texture_hist_bins = 8, neginf = -int(1e9), posinf = int(1e9)):
+    def __init__(self, imgs : 'B3HW', imgs_normalized_gaussian_grads : 'B23HW', reg_lab : 'BHW', max_num_segments: int, color_hist_bins = 32, texture_hist_bins = 8, neginf = torch.tensor(-32000, dtype = torch.int16), posinf = torch.tensor(32000, dtype = torch.int16), mini_batch_size = 128):
         img_channels, img_height, img_width = imgs.shape[-3:]
         self.img_size = img_height * img_width
         self.max_num_segments = max_num_segments
@@ -290,11 +293,37 @@ class HandcraftedRegionFeatures:
         self.texture_hist = torch.zeros(reg_lab.shape[:-2] + (img_channels, imgs_normalized_gaussian_grads.shape[-3], self.max_num_segments * texture_hist_bins), dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3).contiguous()
         self.texture_hist /= self.texture_hist.sum(dim = -1, keepdim = True)
         
-        yx = torch.stack(torch.meshgrid(torch.arange(reg_lab.shape[-2]), torch.arange(reg_lab.shape[-1])))
-        mask = (reg_lab.unsqueeze(-1) == torch.arange(self.max_num_segments)).movedim(-1, -3).unsqueeze(-3)
-        masked_min, masked_max = torch.where(mask, yx, posinf), torch.where(mask, yx, neginf)
-        (ymin, xmin), (ymax, xmax) = masked_min.amin(dim = (-2, -1)).unbind(-1), masked_max.amax(dim = (-2, -1)).unbind(-1)
-        self.xywh = torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1)
+        xywh_ = torch.tensor([[img_width, img_height, 0, 0]], dtype = torch.int64).repeat(reg_lab.shape[-3], max_num_segments, 1).flatten().tolist()
+        reg_lab_ = reg_lab.flatten().tolist()
+        k = 0
+        for b in range(reg_lab.shape[-3]):
+            for y in range(reg_lab.shape[-2]):
+                for x in range(reg_lab.shape[-1]):
+                    r = reg_lab_[k]
+                    xywh_[b * 4 * max_num_segments + r * 4 + 0] = min(x, xywh_[b * 4 * max_num_segments + r * 4 + 0])
+                    xywh_[b * 4 * max_num_segments + r * 4 + 1] = min(y, xywh_[b * 4 * max_num_segments + r * 4 + 1])
+                    xywh_[b * 4 * max_num_segments + r * 4 + 2] = max(x, xywh_[b * 4 * max_num_segments + r * 4 + 2])
+                    xywh_[b * 4 * max_num_segments + r * 4 + 3] = max(y, xywh_[b * 4 * max_num_segments + r * 4 + 3])
+                    #xywh = self.xywh[b, reg_lab_[k]]
+                    #xywh[0].clamp_(max = x)
+                    #xywh[1].clamp_(max = y)
+                    #xywh[2].clamp_(min = x)
+                    #xywh[3].clamp_(min = y)
+                    k += 1
+        self.xywh = torch.as_tensor(xywh_, dtype = torch.int64).view(-1, max_num_segments, 4)
+        self.xywh[..., 2] -= self.xywh[..., 0]
+        self.xywh[..., 3] -= self.xywh[..., 1]
+        
+        #yx = torch.stack(torch.meshgrid(torch.arange(reg_lab.shape[-2], dtype = torch.int16), torch.arange(reg_lab.shape[-1], dtype = torch.int16)))
+        #arange = torch.arange(self.max_num_segments)
+        #self.xywh = []
+        #for b in range(0, len(arange), mini_batch_size):
+        #    arange_ = arange[b : b + mini_batch_size]
+        #    mask = (reg_lab.unsqueeze(-1) == arange_).movedim(-1, -3).unsqueeze(-3)
+        #    masked_min, masked_max = torch.where(mask, yx, posinf), torch.where(mask, yx, neginf)
+        #    (ymin, xmin), (ymax, xmax) = masked_min.amin(dim = (-2, -1)).unbind(-1), masked_max.amax(dim = (-2, -1)).unbind(-1)
+        #    self.xywh.append(torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1))
+        #self.xywh = torch.cat(self.xywh, dim = -2)
 
         self.texture_hist_buffer = torch.empty(self.texture_hist.shape[-1], dtype = self.texture_hist.dtype)
         self.color_hist_buffer = torch.empty(self.color_hist.shape[-1], dtype = self.color_hist.dtype)
