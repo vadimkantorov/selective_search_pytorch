@@ -185,7 +185,7 @@ class SelectiveSearch(torch.nn.Module):
 
     def forward(self, img : 'B3HW'):
         img = torch.as_tensor(img).contiguous()
-        assert img.is_floating_point()
+        assert img.is_floating_point() and img.ndim == 4 and img.shape[-3] == 3
 
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
         hsv[..., 0, :, :] /= 2.0 * math.pi 
