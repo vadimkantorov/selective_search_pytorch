@@ -10,7 +10,7 @@ make selectivesearchsegmentation_opencv_custom.so
 ``` 
 
 ```shell
-# files below were downloaded and not modified:
+# files below were downloaded and not modified (except one commented line in `precomp.hpp`):
 wget https://raw.githubusercontent.com/opencv/opencv_contrib/71f9dbd144c0e32b87746843d4497aea0562a1fe/modules/ximgproc/src/precomp.hpp
 wget https://raw.githubusercontent.com/opencv/opencv_contrib/71f9dbd144c0e32b87746843d4497aea0562a1fe/modules/ximgproc/include/opencv2/ximgproc/segmentation.hpp
 wget https://raw.githubusercontent.com/opencv/opencv_contrib/71f9dbd144c0e32b87746843d4497aea0562a1fe/modules/ximgproc/src/selectivesearchsegmentation.cpp
