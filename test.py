@@ -1,8 +1,13 @@
-import selectivesearchsegmentation
-import selectivesearchsegmentation_opencv_custom
-
+import sys
+import random
+import itertools
 import argparse
 import matplotlib, matplotlib.pyplot as plt
+
+import cv2
+import torch
+import selectivesearchsegmentation
+import selectivesearchsegmentation_opencv_custom
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--input-path', '-i')
@@ -10,7 +15,7 @@ parser.add_argument('--output-path', '-o')
 parser.add_argument('--topk', type = int, default = 64)
 parser.add_argument('--preset', choices = ['fast', 'quality', 'single'], default = 'fast')
 parser.add_argument('--algo', choices = ['pytorch', 'opencv', 'opencv_custom'], default = 'pytorch')
-parser.add_argument('--selectivesearchsegmentation_opencv_custom_so', 'opencv_custom/selectivesearchsegmentation_opencv_custom.so')
+parser.add_argument('--selectivesearchsegmentation_opencv_custom_so', default = 'opencv_custom/selectivesearchsegmentation_opencv_custom.so')
 parser.add_argument('--seed', type = int, default = 42)
 parser.add_argument('--begin', type = int, default = 0)
 parser.add_argument('--grid', type = int, default = 4)
@@ -34,6 +39,8 @@ else:
     algo.setBaseImage(img[..., [2, 1, 0]])
     dict(fast = algo.switchToSelectiveSearchFast, quality = algo.switchToSelectiveSearchQuality, single = algo.switchToSingleStrategy)[args.preset]()
     boxes_xywh = algo.process()
+    regions = None
+    reg_lab = None
     
     level2regions = lambda plane_id: []
     def mask(k):
@@ -42,9 +49,9 @@ else:
         res[y : y + h, x : x + w] = 1
         return res
 
-max_num_segments = 1 + (max(reg['id'] for reg in regions[0]) if regions else 0)
+max_num_segments = 1 + (max(reg['id'] for reg in regions[0]) if regions is not None else 0)
+reg_lab_ = reg_lab[tuple(args.plane_id)[:-1]].clone() if reg_lab is not None else []
 l2r = level2regions(plane_id = args.plane_id)
-reg_lab_ = reg_lab[tuple(args.plane_id)[:-1]].clone()
 
 print('boxes', len(boxes_xywh))
 print('height:', img.shape[0], 'width:', img.shape[1])
@@ -70,7 +77,7 @@ plt.savefig(args.output_path)
 plt.close(fig)
 
 if not l2r:
-    pass
+    sys.exit(0)
 
 fig = plt.figure(figsize = (args.grid, args.grid))
 fig.set_tight_layout(True)

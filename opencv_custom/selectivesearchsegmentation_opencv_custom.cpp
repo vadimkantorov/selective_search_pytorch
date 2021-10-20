@@ -15,8 +15,8 @@ extern "C" int process(
     uint8_t* img_ptr, int32_t img_rows, int32_t img_cols,
     int32_t* rect_ptr, int32_t* rect_rows, 
     int32_t* seg_ptr, int32_t* seg_channels, 
-    int32_t* levlab_ptr, 
-    int32_t* bit_ptr, int32_t bit_cols, 
+    int32_t* reg_ptr, 
+    uint8_t* bit_ptr, int32_t bit_cols,
     const char* strategy, int32_t base_k, int32_t inc_k, float sigma
 )
 {
@@ -32,7 +32,7 @@ extern "C" int process(
 
     std::vector<cv::Rect> rects;
     algo.process(rects);
-
+    
     assert(*rect_rows >= rects.size());
     for(size_t c = 0; c < rects.size(); c++)
     {
@@ -43,13 +43,12 @@ extern "C" int process(
         rect_ptr[4 * c + 3] = rect.height;
     }
     *rect_rows = rects.size();
-
+    
     assert(*seg_channels >= algo.all_img_regions.size());
     for(size_t c = 0; c < algo.all_img_regions.size(); c++)
     {
         cv::Mat& img = algo.all_img_regions[c];
-        int bytes = img.total() * img.elemSize();
-        memcpy(seg_ptr + c * bytes, &img.data[0], bytes);
+        memcpy(seg_ptr + c * img.total(), &img.data[0], img.total() * img.elemSize());
     }
     *seg_channels = algo.all_img_regions.size();
 
@@ -59,12 +58,13 @@ extern "C" int process(
         cv::ximgproc::segmentation::Region& region = algo.all_regions[c];
         if(region.used)
         {
-            levlab_ptr[2 * k + 0] = region.level;
-            levlab_ptr[2 * k + 1] = region.image_id;
-            memcpy(bit_ptr + k * bit_cols * sizeof(int), &region.bit.data[0], region.bit.cols * sizeof(int));
+            reg_ptr[3 * k + 0] = region.id;
+            reg_ptr[3 * k + 1] = region.level;
+            reg_ptr[3 * k + 2] = region.image_id;
+            memcpy(bit_ptr + k * bit_cols, &region.bit.data[0], region.bit.cols);
             k++;
         }
     }
-
+    
     return 0;
 }
