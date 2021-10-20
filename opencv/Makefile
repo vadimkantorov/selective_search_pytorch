@@ -1,6 +1,6 @@
-selectivesearchsegmentation.so:
-	g++ main.cpp -o $@ -shared -fPIC -lopencv_core -lopencv_imgproc -L../../prefix/miniconda/lib/ -I../../prefix/miniconda/include/opencv4/
+selectivesearchsegmentation_opencv_custom.so:
+	g++ $(basename $@).cpp -o $@ -shared -fPIC -lopencv_core -lopencv_imgproc -I$(OPENCVINCLUDEDIR) -L$(OPENCVLIBDIR)
 
 .PHONY: clean
 clean:
-	rm selectivesearchsegmentation.so
+	rm selectivesearchsegmentation_opencv_custom.so

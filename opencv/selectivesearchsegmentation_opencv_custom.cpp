@@ -15,7 +15,7 @@ extern "C" int process(
     uint8_t* img_ptr, int32_t img_rows, int32_t img_cols,
     int32_t* rect_ptr, int32_t* rect_rows, 
     int32_t* seg_ptr, int32_t* seg_channels, 
-    int32_t* lab_ptr, 
+    int32_t* levlab_ptr, 
     int32_t* bit_ptr, int32_t bit_cols, 
     const char* strategy, int32_t base_k, int32_t inc_k, float sigma
 )
@@ -53,12 +53,14 @@ extern "C" int process(
     }
     *seg_channels = algo.all_img_regions.size();
 
+    assert(bit_cols >= MAX_NUM_BIT_BYTES);
     for(size_t c = 0, k = 0; c < algo.all_regions.size(); c++)
     {
         cv::ximgproc::segmentation::Region& region = algo.all_regions[c];
         if(region.used)
         {
-            lab_ptr[k] = region.image_id;
+            levlab_ptr[2 * k + 0] = region.level;
+            levlab_ptr[2 * k + 1] = region.image_id;
             memcpy(bit_ptr + k * bit_cols * sizeof(int), &region.bit.data[0], region.bit.cols * sizeof(int));
             k++;
         }

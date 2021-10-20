@@ -10,5 +10,7 @@ wget https://raw.githubusercontent.com/opencv/opencv_contrib/master/modules/ximg
 
 diff selectivesearchsegmentation.cpp selectivesearchsegmentation_.cpp
 
-make selectivesearchsegmentation.so
+export OPENCVINCLUDEDIR=/path/to/lib
+export OPENCVLIBDIR=/path/to/include/opencv4
+make selectivesearchsegmentation_opencv_custom.so
 ```

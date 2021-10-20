@@ -43,6 +43,8 @@ the use of this software, even if advised of the possibility of such damage.
 
 #include <iostream>
 
+#define MAX_NUM_BIT_BYTES 64
+
 namespace cv {
     namespace ximgproc {
         namespace segmentation {
@@ -1003,10 +1005,10 @@ namespace cv {
                     r.level = 1;
                     r.merged_to = -1;
                     r.bounding_box = bounding_rects[i];
-                    r.bit = Mat::zeros(1, 32, CV_32UC1);
+                    r.bit = Mat::zeros(1, MAX_NUM_BIT_BYTES, CV_8UC1);
                     
-                    int bit_idx = i / 32;
-                    uint32_t bit_set = uint32_t(1) << (31 - (i % 32));
+                    int bit_idx = i / 8;
+                    uint32_t bit_set = uint8_t(1) << (7 - (i % 8));
                     r.bit.data[bit_idx] = bit_set;
 
                     regions.push_back(r);

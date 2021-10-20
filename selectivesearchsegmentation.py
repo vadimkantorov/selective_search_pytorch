@@ -422,7 +422,7 @@ if __name__ == '__main__':
             res[y : y + h, x : x + w] = 1
             return res
 
-    max_num_segments = 1 + max(reg['id'] for reg in regions[0])
+    max_num_segments = 1 + (max(reg['id'] for reg in regions[0]) if regions else 0)
     l2r = level2regions(plane_id = args.plane_id)
     reg_lab_ = reg_lab[tuple(args.plane_id)[:-1]].clone()
 
