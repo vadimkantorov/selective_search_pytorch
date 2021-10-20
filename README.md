@@ -17,7 +17,13 @@ curl https://user-images.githubusercontent.com/1041752/127776719-f8abfd60-6640-4
 curl https://user-images.githubusercontent.com/1041752/138138584-6d0a07d4-5980-4da3-aace-34afa32836a1.JPEG > n02869837_18068.JPEG
 
 python3 test.py -i astronaut.jpg -o test.png
+# open test.png and test.png.gif
 
+python3 test.py -i astronaut.jpg -o test.png --algo opencv
+# open test.png
+
+# pushd opencv_custom && make OPENCVLIBDIR=/path/to/opencv/lib/dir OPENCVINCLUDEDIR=/path/to/opencv/include/dir/opencv4 && popd
+python3 test.py -i astronaut.jpg -o test.png --algo opencv_custom
 # open test.png and test.png.gif
 ```
 ### astronaut.jpg
