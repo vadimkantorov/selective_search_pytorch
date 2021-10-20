@@ -8,5 +8,7 @@ wget https://raw.githubusercontent.com/opencv/opencv_contrib/master/modules/ximg
 wget https://raw.githubusercontent.com/opencv/opencv_contrib/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
 wget https://raw.githubusercontent.com/opencv/opencv_contrib/master/modules/ximgproc/src/graphsegmentation.cpp
 
-gcc main.cpp -o main
+diff selectivesearchsegmentation.cpp selectivesearchsegmentation_.cpp
+
+make selectivesearchsegmentation.so
 ```
