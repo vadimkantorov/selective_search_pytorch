@@ -1,16 +1,20 @@
-The original OpenCV ximgproc code that doesn't require installing opencv-python:
+Modified OpenCV cv::ximgproc::segmentation code that doesn't require installing opencv-python and binds a small shared library via `ctypes`:
 
 ```shell
+# working sequence to install opencv and torchvision is at https://github.com/pytorch/vision/issues/4665#issuecomment-947545121
 conda install -c conda-forge opencv
-
-wget https://raw.githubusercontent.com/opencv/opencv_contrib/master/modules/ximgproc/src/precomp.hpp
-wget https://raw.githubusercontent.com/opencv/opencv_contrib/master/modules/ximgproc/include/opencv2/ximgproc/segmentation.hpp
-wget https://raw.githubusercontent.com/opencv/opencv_contrib/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
-wget https://raw.githubusercontent.com/opencv/opencv_contrib/master/modules/ximgproc/src/graphsegmentation.cpp
 
 export OPENCVINCLUDEDIR=/path/to/lib
 export OPENCVLIBDIR=/path/to/include/opencv4
 make selectivesearchsegmentation_opencv_custom.so
+``` 
+
+```shell
+# files below were downloaded and not modified:
+wget https://raw.githubusercontent.com/opencv/opencv_contrib/71f9dbd144c0e32b87746843d4497aea0562a1fe/modules/ximgproc/src/precomp.hpp
+wget https://raw.githubusercontent.com/opencv/opencv_contrib/71f9dbd144c0e32b87746843d4497aea0562a1fe/modules/ximgproc/include/opencv2/ximgproc/segmentation.hpp
+wget https://raw.githubusercontent.com/opencv/opencv_contrib/71f9dbd144c0e32b87746843d4497aea0562a1fe/modules/ximgproc/src/selectivesearchsegmentation.cpp
+wget https://raw.githubusercontent.com/opencv/opencv_contrib/71f9dbd144c0e32b87746843d4497aea0562a1fe/modules/ximgproc/src/graphsegmentation.cpp
 ```
 
 ```diff
