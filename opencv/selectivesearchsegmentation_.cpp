@@ -65,6 +65,10 @@ namespace cv {
                     bool operator <(const Region& n) const {
                         return rank < n.rank;
                     }
+
+                    int image_id;
+                    bool used;
+                    Mat bit;
             };
 
             // Comparator to sort cv::rect (used for a std::map).
@@ -732,6 +736,10 @@ namespace cv {
                     std::vector<Ptr<SelectiveSearchSegmentationStrategy> > strategies;
 
                     void hierarchicalGrouping(const Mat& img, Ptr<SelectiveSearchSegmentationStrategy>& s, const Mat& img_regions, const Mat_<char>& is_neighbour, const Mat_<int>& sizes, int& nb_segs, const std::vector<Rect>& bounding_rects, std::vector<Region>& regions, int region_id);
+                    
+                public:
+                    std::vector<Region> all_regions;
+                    std::vector<Mat> all_img_regions;
             };
 
             void SelectiveSearchSegmentationImpl::setBaseImage(InputArray img) {
@@ -885,8 +893,8 @@ namespace cv {
             }
 
             void SelectiveSearchSegmentationImpl::process(std::vector<Rect>& rects) {
-
-                std::vector<Region> all_regions;
+                all_regions.clear();
+                all_img_regions.clear();
 
                 int image_id = 0;
 
@@ -899,6 +907,7 @@ namespace cv {
 
                         // Compute initial segmentation
                         (*gs)->processImage(*image, img_regions);
+                        all_img_regions.push_back(img_regions);
 
                         // Get number of regions
                         double min, max;
@@ -949,6 +958,7 @@ namespace cv {
                             hierarchicalGrouping(*image, *strategy, img_regions, is_neighbour, sizes, nb_segs, bounding_rects, regions, image_id);
 
                             for(std::vector<Region>::iterator region = regions.begin(); region != regions.end(); ++region) {
+                                region->image_id = image_id;
                                 all_regions.push_back(*region);
                             }
                         }
@@ -958,19 +968,20 @@ namespace cv {
                 }
 
                 std::sort(all_regions.begin(), all_regions.end());
-
+                
                 std::map<Rect, char, rectComparator> processed_rect;
 
                 rects.clear();
 
                 // Remove duplicate in rect list
                 for(std::vector<Region>::iterator region = all_regions.begin(); region != all_regions.end(); ++region) {
+                    region->used = false;
                     if (processed_rect.find((*region).bounding_box) == processed_rect.end()) {
+                        region->used = true;
                         processed_rect[(*region).bounding_box] = true;
                         rects.push_back((*region).bounding_box);
                     }
                 }
-
             }
 
             void SelectiveSearchSegmentationImpl::hierarchicalGrouping(const Mat& img, Ptr<SelectiveSearchSegmentationStrategy>& s, const Mat& img_regions, const Mat_<char>& is_neighbour, const Mat_<int>& sizes_, int& nb_segs, const std::vector<Rect>& bounding_rects, std::vector<Region>& regions, int image_id) {
@@ -992,6 +1003,11 @@ namespace cv {
                     r.level = 1;
                     r.merged_to = -1;
                     r.bounding_box = bounding_rects[i];
+                    r.bit = Mat::zeros(1, 32, CV_32UC1);
+                    
+                    int bit_idx = i / 32;
+                    uint32_t bit_set = uint32_t(1) << (31 - (i % 32));
+                    r.bit.data[bit_idx] = bit_set;
 
                     regions.push_back(r);
 
@@ -1026,6 +1042,7 @@ namespace cv {
                     new_r.level = std::max(region_from.level, region_to.level) + 1;
                     new_r.merged_to = -1;
                     new_r.bounding_box = region_from.bounding_box | region_to.bounding_box;
+                    cv::bitwise_or(region_from.bit, region_to.bit, new_r.bit);
 
                     regions.push_back(new_r);
 
