@@ -24,7 +24,7 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
         self.byte_nonzero = [[i for i in range(s.bit_length()) if s & (1 << i)] for s in range(256)]
     
     def bit_nonzero(self, bits):
-        return [ [i * 8 + (7 - i) for i, b in enumerate(bit) for k in self.byte_nonzero[b] ] for bit in bits ]
+        return [ [i * 8 + (7 - k) for i, b in enumerate(bit) for k in self.byte_nonzero[b] ] for bit in bits ]
 
     @staticmethod
     def get_region_mask(reg_lab, regs):
