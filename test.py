@@ -7,7 +7,7 @@ import matplotlib, matplotlib.pyplot as plt
 import cv2
 import torch
 import selectivesearchsegmentation
-import selectivesearchsegmentation_opencv_custom
+import opencv_custom.selectivesearchsegmentation_opencv_custom
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--input-path', '-i')
@@ -27,7 +27,7 @@ random.seed(args.seed)
 img = plt.imread(args.input_path).copy()
 
 if args.algo in ['pytorch', 'opencv_custom']:
-    algo = selectivesearchsegmentation.SelectiveSearch(preset = args.preset) if args.algo == 'pytorch' else selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = args.preset, lib_path = args.selectivesearchsegmentation_opencv_custom_so)
+    algo = selectivesearchsegmentation.SelectiveSearch(preset = args.preset) if args.algo == 'pytorch' else opencv_custom.selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = args.preset, lib_path = args.selectivesearchsegmentation_opencv_custom_so)
     boxes_xywh, regions, reg_lab = algo(torch.as_tensor(img).movedim(-1, -3).unsqueeze(0) / 255.0)
     mask = lambda k: algo.get_region_mask(reg_lab, [regions[0][k]])[0]
     boxes_xywh = boxes_xywh[0]
