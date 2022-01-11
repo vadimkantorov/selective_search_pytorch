@@ -9,6 +9,8 @@
 
 #include "graphsegmentation.cpp"
 
+#include "edgeboxes.cpp"
+
 #include "selectivesearchsegmentation_.cpp"
 
 extern "C" int process(
