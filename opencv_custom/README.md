@@ -60,7 +60,7 @@ diff selectivesearchsegmentation.cpp selectivesearchsegmentation_.cpp
 >                     int bit_idx = i / 8;
 >                     uint32_t bit_set = uint8_t(1) << (7 - (i % 8));
 >                     assert(bit_idx < MAX_NUM_BIT_BYTES);
->                     r.bit.data[bit_idx] = bit_set;
+>                     r.bit.data[bit_idx] |= bit_set;
 1028a1048
 >                     cv::bitwise_or(region_from.bit, region_to.bit, new_r.bit);
 ```
