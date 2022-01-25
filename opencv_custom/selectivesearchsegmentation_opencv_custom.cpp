@@ -9,6 +9,7 @@
 
 #include "graphsegmentation.cpp"
 
+#include "edgeboxes.hpp"
 #include "edgeboxes.cpp"
 
 #include "selectivesearchsegmentation_.cpp"
