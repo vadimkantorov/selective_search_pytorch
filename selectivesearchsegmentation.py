@@ -162,7 +162,7 @@ class SelectiveSearch(torch.nn.Module):
             ])
             
         elif self.preset == 'fast':
-            self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4) #TODO: add lab
+            self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv, lab], dim = -4) 
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
             self.strategies = torch.tensor([
                 [0.25, 0.25, 0.25, 0.25],
