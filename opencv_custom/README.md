@@ -6,7 +6,7 @@ conda install -c conda-forge opencv
 
 export OPENCVINCLUDEDIR=/path/to/lib
 export OPENCVLIBDIR=/path/to/include/opencv4
-make selectivesearchsegmentation_opencv_custom.so
+make selectivesearchsegmentation_opencv_custom_.so
 ``` 
 
 ```shell
