@@ -3,7 +3,7 @@ import ctypes
 import torch
 
 class SelectiveSearchOpenCVCustom(torch.nn.Module):
-    def __init__(self, preset = 'fast', lib_path = 'selectivesearchsegmentation_opencv_custom.so', max_num_rects = 4096, max_num_seg = 16, max_num_bit = 64):
+    def __init__(self, preset = 'fast', lib_path = 'selectivesearchsegmentation_opencv_custom_.so', max_num_rects = 4096, max_num_seg = 16, max_num_bit = 64):
         super().__init__()
         self.bind = ctypes.CDLL(lib_path)
         self.bind.process.argtypes = [
