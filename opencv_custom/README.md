@@ -1,4 +1,4 @@
-Modified OpenCV cv::ximgproc::segmentation code that doesn't require installing opencv-python and binds a small shared library via `ctypes`:
+Modified OpenCV `cv::ximgproc::segmentation` code that doesn't require installing opencv-python and binds a small shared library via `ctypes`:
 
 ```shell
 # working sequence to install opencv and torchvision is at https://github.com/pytorch/vision/issues/4665#issuecomment-947545121
