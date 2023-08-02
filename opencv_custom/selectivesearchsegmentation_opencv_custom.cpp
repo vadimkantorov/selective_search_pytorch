@@ -9,8 +9,10 @@
 
 #include "graphsegmentation.cpp"
 
-#include "edgeboxes.hpp"
-#include "edgeboxes.cpp"
+//#include "edgeboxes.hpp"
+//#include "edgeboxes.cpp"
+
+//#include "selectivesearchsegmentation.cpp"
 
 #include "selectivesearchsegmentation_.cpp"
 
@@ -27,11 +29,26 @@ extern "C" int process(
     algo.setBaseImage(cv::Mat(img_rows, img_cols, CV_8UC3, img_ptr));
     
     if(0 == strcmp("single", strategy))
-        (base_k > 0 && sigma > 0) ? algo.switchToSingleStrategy(base_k, sigma) : algo.switchToSingleStrategy();
+    {
+        if(base_k > 0 && sigma > 0)
+            algo.switchToSingleStrategy(base_k, sigma);
+        else
+            algo.switchToSingleStrategy();
+    }
     if(0 == strcmp("fast", strategy))
-        (base_k > 0 && inc_k > 0 && sigma > 0) ? algo.switchToSelectiveSearchFast(base_k, inc_k, sigma) : algo.switchToSelectiveSearchFast();
+    {
+        if(base_k > 0 && inc_k > 0 && sigma > 0)
+            algo.switchToSelectiveSearchFast(base_k, inc_k, sigma);
+        else
+            algo.switchToSelectiveSearchFast();
+    }
     if(0 == strcmp("quality", strategy))
-        (base_k > 0 && inc_k > 0 && sigma > 0) ? algo.switchToSelectiveSearchQuality(base_k, inc_k, sigma) : algo.switchToSelectiveSearchQuality();
+    {
+        if(base_k > 0 && inc_k > 0 && sigma > 0)
+            algo.switchToSelectiveSearchQuality(base_k, inc_k, sigma);
+        else
+            algo.switchToSelectiveSearchQuality();
+    }
 
     std::vector<cv::Rect> rects;
     algo.process(rects);

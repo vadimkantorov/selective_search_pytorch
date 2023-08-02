@@ -1007,10 +1007,10 @@ namespace cv {
                     r.bounding_box = bounding_rects[i];
                     r.bit = Mat::zeros(1, MAX_NUM_BIT_BYTES, CV_8UC1);
                     
-                    int bit_idx = i / 8;
-                    uint32_t bit_set = uint8_t(1) << (7 - (i % 8));
-                    assert(bit_idx < MAX_NUM_BIT_BYTES);
-                    r.bit.data[bit_idx] |= bit_set;
+                    int byte_idx = i / 8;
+                    uint8_t bit_set = uint8_t(1) << (7 - (i % 8));
+                    assert(byte_idx < MAX_NUM_BIT_BYTES);
+                    r.bit.data[byte_idx] |= bit_set;
 
                     regions.push_back(r);
 

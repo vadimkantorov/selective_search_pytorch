@@ -10,7 +10,7 @@ Most of implementation should be running fine on GPU, but it is not tested yet (
 
 ### Usage
 ```shell
-pip install opencv-python opencv-contrib-python
+pip install opencv-python-headless opencv-contrib-python-headless # or without -headless
 
 # download github mirror of astronaut test image https://www.flickr.com/photos/nasacommons/16504233985/ small size: https://live.staticflickr.com/8674/16504233985_9f1060624e_w_d.jpg
 curl https://user-images.githubusercontent.com/1041752/127776719-f8abfd60-6640-48fb-8b70-a1b6f6ade5cf.jpg > astronaut.jpg

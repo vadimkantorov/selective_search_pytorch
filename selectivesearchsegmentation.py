@@ -104,8 +104,9 @@ def image_gaussian_grads(img):
     return torch.cat([grads.clamp(min = 0), grads.clamp(max = 0), grads_rotated.clamp(min = 0), grads_rotated.clamp(max = 0)], dim = -3)
 
 def normalize_min_max(x, dim, eps = 1e-12):
-    hmin, hmax = x.amin(dim = dim, keepdim = True), x.amax(dim = dim, keepdim = True)
-    return (x - hmin) / (eps + hmax - hmin) 
+    # https://github.com/pytorch/pytorch/issues/61582
+    amin, amax = x.amin(dim = dim, keepdim = True), x.amax(dim = dim, keepdim = True)
+    return (x - amin) / (eps + amax - amin) 
         
 def expand_dim(tensor, expand, dim):
     return tensor.unsqueeze(dim).expand((-1, ) * (dim if dim >= 0 else tensor.ndim + dim + 1) + (expand, ) + (-1, ) * (tensor.ndim - (dim if dim >= 0 else tensor.ndim + dim + 1)))
@@ -115,7 +116,6 @@ def expand_ones_like(tensor, dtype = torch.float32):
 
 def rotated_xywh(img_height, img_width, angle = 45.0, scale = 1.0):
     # https://docs.opencv.org/4.5.3/da/d54/group__imgproc__transform.html#gafbbc470ce83812914a70abfb604f4326
-    
     center = (img_width / 2.0, img_height / 2.0)
     alpha, beta = scale * math.cos(math.radians(angle)), scale * math.sin(math.radians(angle))
     rot = torch.tensor([
@@ -187,6 +187,7 @@ class SelectiveSearch(torch.nn.Module):
         img = torch.as_tensor(img).contiguous()
         assert img.is_floating_point() and img.ndim == 4 and img.shape[-3] == 3
 
+        # all image planes will be in [0.0; 255.0]
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
         hsv[..., 0, :, :] /= 2.0 * math.pi 
         hsv *= 255.0
@@ -194,7 +195,7 @@ class SelectiveSearch(torch.nn.Module):
         lab[..., 1:, :, :] += 128.0
         gray *= 255.0
         img *= 255.0
-        
+
         imgs = self.images(img, hsv, lab, gray)
 
         reg_lab = torch.stack([torch.as_tensor(gs.processImage(img.movedim(-3, -1).numpy())) for img in imgs.flatten(end_dim = -4) for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),))
@@ -223,10 +224,9 @@ class SelectiveSearch(torch.nn.Module):
         plane_idx *= max_num_segments
         graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((plane_idx + r1).tolist(), (plane_idx + r2).tolist()), key = lambda t: t[0])}
         
-        regs = [dict(plane_id = (b, i, g, s), id = r1, plane_idx = plane_idx, level = 0 if r1 < int(num_segments[b, i, g]) else -1, bbox = tuple(features.xywh_[plane_idx * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for plane_idx, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
+        regs = [dict(plane_id = (b, i, g, s), id = r1, plane_idx = plane_idx, level = 0 if r1 < int(num_segments[b, i, g]) else -1, bbox_xywh = tuple(features.xywh_[plane_idx * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for plane_idx, (b, i, g, s, strategy) in enumerate((b, i, g, s, strategy) for b in range(num_segments.shape[0]) for i in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
         heapq.heapify(PQ)
-        
         while PQ:
             negsim, u, v = heapq.heappop(PQ)
             if u not in graph or v not in graph:
@@ -235,21 +235,22 @@ class SelectiveSearch(torch.nn.Module):
             reg_fro, reg_to = regs[u], regs[v]
             regs.append(dict(reg_fro, level = 1 + max(reg_fro['level'], reg_to['level']), ids = reg_fro['ids'] | reg_to['ids'], id = min(reg_fro['id'], reg_to['id'])))
             reg_fro['parent_id'] = reg_to['parent_id'] = len(regs) - 1
-            regs[-1]['bbox'] = features.merge_regions(reg_fro['id'], reg_to['id'], reg_fro['plane_idx'])
+            regs[-1]['bbox_xywh'] = features.merge_regions(reg_fro['id'], reg_to['id'], reg_fro['plane_idx'])
 
             for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_id'], features, regs, graph):
                 heapq.heappush(PQ, new_edge)
         
         for reg in regs:
             reg['rank'] = self.compute_region_rank(reg)
+
         key_img_id, key_rank = (lambda reg: reg['plane_id'][0]), (lambda reg: reg['rank'])
         by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 0], key = key_img_id), key = key_img_id)}
-        without_duplicates = [{reg['bbox'] : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
+        without_duplicates = [{reg['bbox_xywh'] : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
         return [torch.as_tensor(list(without_duplicates[b].keys()), dtype = torch.int16) for b in range(len(img))], [[by_image[b][i] for i in without_duplicates[b].values()] for b in range(len(img))], reg_lab
     
     @staticmethod
     def build_graph(reg_lab : 'BIGHW', max_num_segments : int):
-        I = torch.stack(torch.meshgrid(*[torch.arange(s) for s in reg_lab.shape[:3]]), dim = -1)[..., None, None]
+        I = torch.stack(torch.meshgrid(*[torch.arange(s) for s in reg_lab.shape[:3]], indexing = 'ij'), dim = -1)[..., None, None]
         DX = torch.stack([reg_lab[..., :, :-1], reg_lab[..., :, 1:]], dim = -1).movedim(-1, -3)
         DY = torch.stack([reg_lab[..., :-1, :], reg_lab[..., 1:, :]], dim = -1).movedim(-1, -3)
         dx = torch.cat([I.expand(-1, -1, -1, -1, *DX.shape[-2:]), DX], dim = -3).flatten(start_dim = -2)
