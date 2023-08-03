@@ -91,7 +91,7 @@ def image_scharr_gradients(img : 'BCHW') -> 'BC2HW':
     kernel = torch.stack([flipped_scharr_x, flipped_scharr_x.t()]).unsqueeze(1)
     return F.conv2d(img.flatten(end_dim = -3).unsqueeze(1), kernel, padding = 1).unflatten(0, img.shape[:-2])
 
-def image_gaussian_grads(img):
+def image_gaussian_grads(img : 'BCHW'):
     grads = image_scharr_gradients(img)
     
     img_height, img_width = img.shape[-2:]
@@ -134,10 +134,17 @@ def rotated_xywh(img_height : int, img_width : int, angle = 45.0, scale = 1.0):
 
     return xywh
 
-def bbox_merge_tensor(xywh1 : torch.Tensor, xywh2 : torch.Tensor) -> torch.Tensor:
-    xmin, ymin = torch.min(xywh1[..., 0], xywh2[..., 0]), torch.min(xywh1[..., 1], xywh2[..., 1])
-    xmax, ymax = torch.max(xywh1[..., 0] + xywh1[..., 2] - 1, xywh2[..., 0] + xywh2[..., 2] - 1), torch.max(xywh1[..., 1] + xywh1[..., 3] - 1, xywh2[..., 1] + xywh2[..., 3] - 1)
-    return torch.stack([xmin, ymin, xmax - xmin + 1, ymax - ymin + 1], dim = -1)
+def bbox_merge_tensor(xywh1 : torch.Tensor, xywh2 : torch.Tensor, dtype = None) -> torch.Tensor:
+    xy1, wh1 = xywh1.movedim(-1, 0).split(2)
+    xy2, wh2 = xywh2.movedim(-1, 0).split(2)
+
+    xymax1 = xy1.add(wh1).sub_(1) 
+    xymax2 = xy2.add(wh2).sub_(1)
+    xymin = torch.min(xy1, xy2)
+    xymax = torch.max(xymax1, xymax2)
+    # work around for https://github.com/pytorch/pytorch/issues/54216
+    w, h = xymax.sub_(xymin).add_(1)
+    return torch.mul(w, h, out = torch.tensor([], dtype = dtype))
 
 def bbox_merge(xywh1 : tuple, xywh2 : tuple) -> tuple:
     x1, y1 = min(xywh1[0], xywh2[0]), min(xywh1[1], xywh2[1])
@@ -153,7 +160,7 @@ def bbox_per_segment(reg_lab : 'BHW', max_num_segments : int):
     y, x = expand_dim(y, reg_lab.shape[0], dim = 0).flatten(start_dim = -2), expand_dim(x, reg_lab.shape[0], dim = 0).flatten(start_dim = -2)
     reg_lab = reg_lab.flatten(start_dim = -2)
     # BxS, BxS, BxS, BxS
-    xywh = torch.tensor([ [[img_width]], [[img_height]], [[0]], [[0]] ], dtype = torch.int16).expand(-1, reg_lab.shape[0], max_num_segments).contiguous()
+    xywh = torch.tensor([ [[img_width]], [[img_height]], [[0]], [[0]] ], dtype = torch.int16).repeat(1, reg_lab.shape[0], max_num_segments)
     xywh[0].scatter_reduce_(-1, reg_lab, x, reduce = 'amin')
     xywh[1].scatter_reduce_(-1, reg_lab, y, reduce = 'amin')
     xywh[2].scatter_reduce_(-1, reg_lab, x, reduce = 'amax')
@@ -220,30 +227,34 @@ class SelectiveSearch(torch.nn.Module):
 
         # all image planes will be in [0.0; 255.0]
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
-        hsv[..., 0, :, :] /= 2.0 * math.pi 
-        hsv *= 255.0
-        lab[..., 0, :, :] *= 255.0/100.0
-        lab[..., 1:, :, :] += 128.0
-        gray *= 255.0
-        img *= 255.0
-
+        hsv_ = torch.as_tensor(cv2.cvtColor(img[0].movedim(0, -1).numpy(), cv2.COLOR_RGB2HSV))
+        #breakpoint()
+        
+        hsv[..., 0, :, :] /= 2.0 * math.pi
+        
+        lab[..., 0, :, :] /= 100.0
+        lab[..., 1:,:, :] /= 255.0
+        lab[..., 1:,:, :] += 128/255.0
         imgs = self.images(img, hsv, lab, gray)
+        imgs *= 255.0
+
+        
+        # BxCxGxRxHxW (R = #rotations)
+        imgs_normalized_gaussian_grads = normalize_min_max(image_gaussian_grads(imgs.flatten(end_dim = -4)).unflatten(0, imgs.shape[:-3]), dim = (-2, -1))
+        print('image feat', time.time() - tic); tic = time.time()
 
         # BxCxGxHxW (C = #colorspaces, G = #graphsegs)
         reg_lab = torch.stack([torch.as_tensor(gs.processImage(img.movedim(-3, -1).numpy())) for img in imgs.flatten(end_dim = -4) for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),))
         reg_lab = self.postprocess_labels(reg_lab)
-        
         # BxCxG
         num_segments = 1 + reg_lab.amax(dim = (-2, -1))
         max_num_segments = int(num_segments.amax())
-
-        # BxCxGxRxHxW (R = #rotations)
-        imgs_normalized_gaussian_grads = normalize_min_max(image_gaussian_grads(imgs.flatten(end_dim = -4)).unflatten(0, imgs.shape[:-3]), dim = (-2, -1))
+        print('image seg', time.time() - tic); tic = time.time()
 
         features = HandcraftedRegionFeatures(expand_dim(imgs, len(self.segmentations), dim = 2).flatten(end_dim = 2), expand_dim(imgs_normalized_gaussian_grads, len(self.segmentations), dim = 2).flatten(end_dim = 2), reg_lab.flatten(end_dim = 2), max_num_segments = max_num_segments)
         affinity = features.compute_region_affinity()
-        features.expand_and_flatten(len(self.strategies))
-        print('region feat computation', time.time() - tic)
+        features.repeat_features_times_strategies_and_flatten(len(self.strategies))
+        print('region feat', time.time() - tic)
         
         graphadj = self.build_graph(reg_lab, max_num_segments = max_num_segments).flatten(end_dim = -3)
         graphadj = (graphadj[..., None, None] * affinity.unsqueeze(-2) * self.strategies).sum(dim = -1)
@@ -262,6 +273,8 @@ class SelectiveSearch(torch.nn.Module):
         
         regs = [dict(plane_id = (b, c, g, s), id = r1, plane_idx = plane_idx, level = 0 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(features.xywh_[plane_idx * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for plane_idx, (b, c, g, s, strategy) in enumerate((b, c, g, s, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
+        features_merge_regions_counter, features_merge_regions_time = 0, 0.0
+        features.compute_region_affinity_counter, features.compute_region_affinity_time = 0, 0.00
         heapq.heapify(PQ)
         while PQ:
             negsim, u, v = heapq.heappop(PQ)
@@ -271,7 +284,9 @@ class SelectiveSearch(torch.nn.Module):
             reg_fro, reg_to = regs[u], regs[v]
             regs.append(dict(reg_fro, level = 1 + max(reg_fro['level'], reg_to['level']), ids = reg_fro['ids'] | reg_to['ids'], id = min(reg_fro['id'], reg_to['id'])))
             reg_fro['parent_id'] = reg_to['parent_id'] = len(regs) - 1
+            tic = time.time()
             regs[-1]['bbox_xywh'] = features.merge_regions_(reg_fro['id'], reg_to['id'], reg_fro['plane_idx'])
+            features_merge_regions_time += time.time() - tic; features_merge_regions_counter += 1
 
             for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_id'], features, regs, graph):
                 heapq.heappush(PQ, new_edge)
@@ -279,10 +294,13 @@ class SelectiveSearch(torch.nn.Module):
         for reg in regs:
             reg['rank'] = self.compute_region_rank(reg)
 
+        print('merge reg', features_merge_regions_counter, features_merge_regions_time)
+        print('sim reg', features.compute_region_affinity_counter, features.compute_region_affinity_time)
+
         key_img_id, key_rank = (lambda reg: reg['plane_id'][0]), (lambda reg: reg['rank'])
         by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 0], key = key_img_id), key = key_img_id)}
         without_duplicates = [{reg['bbox_xywh'] : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
-        return [torch.as_tensor(list(without_duplicates[b].keys()), dtype = torch.int16) for b in range(len(img))], [[by_image[b][i] for i in without_duplicates[b].values()] for b in range(len(img))], reg_lab
+        return [torch.tensor(list(without_duplicates[b].keys()), dtype = torch.int16) for b in range(len(img))], [[by_image[b][i] for i in without_duplicates[b].values()] for b in range(len(img))], reg_lab
     
     @staticmethod
     def build_graph(reg_lab : 'BIGHW', max_num_segments : int):
@@ -306,7 +324,9 @@ class SelectiveSearch(torch.nn.Module):
                 if vv == u or vv == v:
                     continue
 
+                tic = time.time()
                 new_edges.append((-features.compute_region_affinity(regs[ww]['id'], regs[vv]['id'], regs[ww]['plane_idx'], *regs[ww]['strategy']), ww, vv))
+                features.compute_region_affinity_time += time.time() - tic; features.compute_region_affinity_counter += 1
 
                 graph[vv].remove(uu)
                 graph[vv].add(ww)
@@ -344,10 +364,8 @@ class HandcraftedRegionFeatures:
 
     def compute_region_affinity(self, r1 = None, r2 = None, plane_idx = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
         if r1 is None and r2 is None:
-            bbox_size_tensor = lambda xywh: xywh[..., -2] * xywh[..., -1]
-
-            size_affinity = (1 - (self.region_sizes.unsqueeze(-1) + self.region_sizes.unsqueeze(-2)).div_(self.img_size)).clamp_(min = 0, max = 1)
-            fill_affinity = (1 - (bbox_size_tensor(bbox_merge_tensor(self.xywh.unsqueeze(-2), self.xywh.unsqueeze(-3))) - self.region_sizes.unsqueeze(-1) - self.region_sizes.unsqueeze(-2)) / self.img_size).clamp_(min = 0, max = 1)
+            size_affinity = self.region_sizes.unsqueeze(-1).add(self.region_sizes.unsqueeze(-2)).div_(-self.img_size).add_(1).clamp_(min = 0, max = 1)
+            fill_affinity = bbox_merge_tensor(self.xywh.unsqueeze(-2), self.xywh.unsqueeze(-3), dtype = self.region_sizes.dtype).sub_(self.region_sizes.unsqueeze(-1)).sub_(self.region_sizes.unsqueeze(-2)).div_(-self.img_size).add_(1).clamp_(min = 0, max = 1)
             color_affinity = torch.min(self.color_hist.unsqueeze(-2), self.color_hist.unsqueeze(-3)).sum(dim = -1)
             texture_affinity = torch.min(self.texture_hist.unsqueeze(-2), self.texture_hist.unsqueeze(-3)).sum(dim = -1)
             return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
@@ -373,24 +391,27 @@ class HandcraftedRegionFeatures:
 
             return res
     
-    def merge_regions_(self, r1, r2, plane_idx):
+    def merge_regions_(self, r1, r2, plane_idx) -> tuple:
         plane_idx *= self.max_num_segments
         
         s1, s2 = self.region_sizes_[plane_idx + r1], self.region_sizes_[plane_idx + r2]
         s1s2 = s1 + s2
 
         self.region_sizes_[plane_idx + r2] = self.region_sizes_[plane_idx + r1] = s1s2
-
         self.xywh_[plane_idx + r2] = self.xywh_[plane_idx + r1] = bbox_merge(self.xywh_[plane_idx + r1], self.xywh_[plane_idx + r2])
         
         self.color_hist_[plane_idx + r2].copy_(self.color_hist_[plane_idx + r1].mul_(s1).add_(self.color_hist_[plane_idx + r2].mul_(s2)).div_(s1s2))
-        
         self.texture_hist_[plane_idx + r2].copy_(self.texture_hist_[plane_idx + r1].mul_(s1).add_(self.texture_hist_[plane_idx + r2].mul_(s2)).div_(s1s2))
+        
         return self.xywh_[plane_idx + r2]
 
         
-    def expand_and_flatten(self, num_strategies):
-        self.region_sizes_ = expand_dim(self.region_sizes, num_strategies, dim = -2).flatten().tolist()
-        self.xywh_ = expand_dim(self.xywh, num_strategies, dim = -3).flatten(end_dim = -2).tolist()
-        self.color_hist_ = expand_dim(self.color_hist, num_strategies, dim = -3).flatten(end_dim = -2)
-        self.texture_hist_ = expand_dim(self.texture_hist, num_strategies, dim = -3).flatten(end_dim = -2)
+    def repeat_features_times_strategies_and_flatten(self, num_strategies):
+        self.region_sizes_ = self.region_sizes.unsqueeze(-2).repeat(1, num_strategies, 1).flatten().tolist()
+        self.xywh_ = self.xywh.unsqueeze(-3).repeat(1, num_strategies, 1, 1).flatten(end_dim = -2).tolist()
+        self.color_hist_ = self.color_hist.unsqueeze(-3).repeat(1, num_strategies, 1, 1).flatten(end_dim = -2)
+        self.texture_hist_ = self.texture_hist.unsqueeze(-3).repeat(1, num_strategies, 1, 1).flatten(end_dim = -2)
+        #self.region_sizes_ = expand_dim(self.region_sizes, num_strategies, dim = -2).flatten().tolist()
+        #self.xywh_ = expand_dim(self.xywh, num_strategies, dim = -3).flatten(end_dim = -2).tolist()
+        #self.color_hist_ = expand_dim(self.color_hist, num_strategies, dim = -3).flatten(end_dim = -2)
+        #self.texture_hist_ = expand_dim(self.texture_hist, num_strategies, dim = -3).flatten(end_dim = -2)
