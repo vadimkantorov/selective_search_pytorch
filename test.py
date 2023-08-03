@@ -26,9 +26,10 @@ except Exception as e:
     selectivesearchsegmentation_opencv_custom = None
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--input-path', '-i')
-parser.add_argument('--output-path', '-o')
+parser.add_argument('--input-path', '-i', default = 'astronaut.jpg')
+parser.add_argument('--output-path', '-o', default = 'test.png')
 parser.add_argument('--debugexit', action = 'store_true') 
+parser.add_argument('--compile', action = 'store_true') 
 parser.add_argument('--topk', type = int, default = 64)
 parser.add_argument('--preset', choices = ['fast', 'quality', 'single'], default = 'fast')
 parser.add_argument('--algo', choices = ['pytorch', 'opencv', 'opencv_custom'], default = 'pytorch')
@@ -51,7 +52,7 @@ print(args.input_path, img_rgbhwc_255.shape)
 tic = toc = 0.0
 
 if args.algo in ['pytorch', 'opencv_custom']:
-    algo = selectivesearchsegmentation.SelectiveSearch(preset = args.preset) if args.algo == 'pytorch' else selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = args.preset, lib_path = args.selectivesearchsegmentation_opencv_custom_so)
+    algo = selectivesearchsegmentation.SelectiveSearch(preset = args.preset, compile = args.compile) if args.algo == 'pytorch' else selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = args.preset, lib_path = args.selectivesearchsegmentation_opencv_custom_so)
     tic = time.time()
     boxes_xywh, regions, reg_lab = algo(img_rgb1chw_1)
     toc = time.time()
