@@ -144,37 +144,14 @@ def bbox_merge(xywh1 : tuple, xywh2 : tuple) -> tuple:
     x2, y2 = max(xywh1[0] + xywh1[2] - 1, xywh2[0] + xywh2[2] - 1), max(xywh1[1] + xywh1[3] - 1, xywh2[1] + xywh2[3] - 1)
     return (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
 
-def bbox_per_segment_(reg_lab : 'BHW', max_num_segments : int):
-    assert reg_lab.ndim == 3
-    img_height, img_width = reg_lab.shape[-2:]
-
-    # (BxSx4)
-    xyxy = torch.tensor([[img_width, img_height, 0, 0]], dtype = torch.int64).repeat(reg_lab.shape[-3], max_num_segments, 1).flatten().tolist()
-    reg_lab_ = reg_lab.flatten().tolist()
-    k = 0
-    for b in range(reg_lab.shape[-3]):
-        for y in range(reg_lab.shape[-2]):
-            for x in range(reg_lab.shape[-1]):
-                r = reg_lab_[k]
-                xyxy[b * 4 * max_num_segments + r * 4 + 0] = min(x, xyxy[b * 4 * max_num_segments + r * 4 + 0])
-                xyxy[b * 4 * max_num_segments + r * 4 + 1] = min(y, xyxy[b * 4 * max_num_segments + r * 4 + 1])
-                xyxy[b * 4 * max_num_segments + r * 4 + 2] = max(x, xyxy[b * 4 * max_num_segments + r * 4 + 2])
-                xyxy[b * 4 * max_num_segments + r * 4 + 3] = max(y, xyxy[b * 4 * max_num_segments + r * 4 + 3])
-                k += 1
-    # BxSx4
-    xywh = torch.tensor(xyxy, dtype = torch.int64).view(-1, max_num_segments, 4)
-    xywh[..., 2] -= xywh[..., 0]
-    xywh[..., 3] -= xywh[..., 1]
-    return xywh
-
 def bbox_per_segment(reg_lab : 'BHW', max_num_segments : int):
     assert reg_lab.ndim == 3
     img_height, img_width = reg_lab.shape[-2:]
     
     # HxW, HxW
     y, x = torch.meshgrid(torch.arange(reg_lab.shape[-2], dtype = torch.int16), torch.arange(reg_lab.shape[-1], dtype = torch.int16), indexing = 'ij')
-    y, x = y.unsqueeze(0).expand_as(reg_lab).flatten(start_dim = -2), x.unsqueeze(0).expand_as(reg_lab).flatten(start_dim = -2)
-    reg_lab = reg_lab.to(torch.int64).flatten(start_dim = -2)
+    y, x = expand_dim(y, reg_lab.shape[0], dim = 0).flatten(start_dim = -2), expand_dim(x, reg_lab.shape[0], dim = 0).flatten(start_dim = -2)
+    reg_lab = reg_lab.flatten(start_dim = -2)
     # BxS, BxS, BxS, BxS
     xywh = torch.tensor([ [[img_width]], [[img_height]], [[0]], [[0]] ], dtype = torch.int16).expand(-1, reg_lab.shape[0], max_num_segments).contiguous()
     xywh[0].scatter_reduce_(-1, reg_lab, x, reduce = 'amin')
