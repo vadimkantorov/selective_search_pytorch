@@ -252,10 +252,9 @@ class SelectiveSearch(torch.nn.Module):
         
         expand_dim = lambda tensor, expand, dim: tensor.unsqueeze(dim).expand((-1, ) * (dim if dim >= 0 else tensor.ndim + dim + 1) + (expand, ) + (-1, ) * (tensor.ndim - (dim if dim >= 0 else tensor.ndim + dim + 1)))
 
-        breakpoint()
-        features = HandcraftedRegionFeatures(expand_dim(imgs, len(self.segmentations), dim = 2).flatten(end_dim = 2), expand_dim(imgs_normalized_gaussian_grads, len(self.segmentations), dim = 2).flatten(end_dim = 2), reg_lab.flatten(end_dim = 2), max_num_segments = max_num_segments)
-        affinity = features.compute_region_affinity()
-        features.repeat_for_strategies_and_flatten(len(self.strategies))
+        region_features = HandcraftedRegionFeatures(expand_dim(imgs, len(self.segmentations), dim = 2).flatten(end_dim = 2), expand_dim(imgs_normalized_gaussian_grads, len(self.segmentations), dim = 2).flatten(end_dim = 2), reg_lab.flatten(end_dim = 2), max_num_segments = max_num_segments)
+        affinity = region_features.compute_region_affinity()
+        region_features.repeat_for_strategies_and_flatten(len(self.strategies))
         print('region feat', time.time() - tic)
         
         graphadj = self.build_graph(reg_lab, max_num_segments = max_num_segments).flatten(end_dim = -3)
@@ -273,10 +272,10 @@ class SelectiveSearch(torch.nn.Module):
         plane_idx *= max_num_segments
         graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((plane_idx + r1).tolist(), (plane_idx + r2).tolist()), key = lambda t: t[0])}
         
-        regs = [dict(plane_id = (b, c, g, s), id = r1, plane_idx = plane_idx, level = 0 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(features.xywh_[plane_idx * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for plane_idx, (b, c, g, s, strategy) in enumerate((b, c, g, s, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
+        regs = [dict(plane_id = (b, c, g, s), id = r1, plane_idx = plane_idx, level = 0 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(regoin_features.xywh_[plane_idx * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for plane_idx, (b, c, g, s, strategy) in enumerate((b, c, g, s, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
-        features_merge_regions_counter, features_merge_regions_time = 0, 0.0
-        features.compute_region_affinity_counter, features.compute_region_affinity_time = 0, 0.00
+        region_features.merge_regions_counter, region_features.merge_regions_time = 0, 0.0
+        region_features.compute_region_affinity_counter, region_features.compute_region_affinity_time = 0, 0.00
         heapq.heapify(PQ)
         while PQ:
             negsim, u, v = heapq.heappop(PQ)
@@ -287,17 +286,17 @@ class SelectiveSearch(torch.nn.Module):
             regs.append(dict(reg_fro, level = 1 + max(reg_fro['level'], reg_to['level']), ids = reg_fro['ids'] | reg_to['ids'], id = min(reg_fro['id'], reg_to['id'])))
             reg_fro['parent_id'] = reg_to['parent_id'] = len(regs) - 1
             tic = time.time()
-            regs[-1]['bbox_xywh'] = features.merge_regions_(reg_fro['id'], reg_to['id'], reg_fro['plane_idx'])
-            features_merge_regions_time += time.time() - tic; features_merge_regions_counter += 1
+            regs[-1]['bbox_xywh'] = region_features.merge_regions_(reg_fro['id'], reg_to['id'], reg_fro['plane_idx'])
+            region_features.merge_regions_time += time.time() - tic; region_features.merge_regions_counter += 1
 
-            for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_id'], features, regs, graph):
+            for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_id'], region_features, regs, graph):
                 heapq.heappush(PQ, new_edge)
         
         for reg in regs:
             reg['rank'] = self.compute_region_rank(reg)
 
-        print('merge reg', features_merge_regions_counter, features_merge_regions_time)
-        print('sim reg', features.compute_region_affinity_counter, features.compute_region_affinity_time)
+        print('merge reg', region_features.merge_regions_counter, region_features.merge_regions_time)
+        print('sim reg', region_features.compute_region_affinity_counter, region_features.compute_region_affinity_time)
 
         key_img_id, key_rank = (lambda reg: reg['plane_id'][0]), (lambda reg: reg['rank'])
         by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 0], key = key_img_id), key = key_img_id)}
@@ -318,7 +317,7 @@ class SelectiveSearch(torch.nn.Module):
         return A.coalesce().to(torch.bool).to_dense().triu(diagonal = 1)
 
     @staticmethod
-    def contract_graph_edge(u, v, ww, features, regs, graph):
+    def contract_graph_edge(u, v, ww, region_features, regs, graph):
         graph[ww] = set()
         new_edges = []
         for uu in [u, v]:
@@ -327,8 +326,8 @@ class SelectiveSearch(torch.nn.Module):
                     continue
 
                 tic = time.time()
-                new_edges.append((-features.compute_region_affinity(regs[ww]['id'], regs[vv]['id'], regs[ww]['plane_idx'], *regs[ww]['strategy']), ww, vv))
-                features.compute_region_affinity_time += time.time() - tic; features.compute_region_affinity_counter += 1
+                new_edges.append((-region_features.compute_region_affinity(regs[ww]['id'], regs[vv]['id'], regs[ww]['plane_idx'], *regs[ww]['strategy']), ww, vv))
+                region_features.compute_region_affinity_time += time.time() - tic; region_features.compute_region_affinity_counter += 1
 
                 graph[vv].remove(uu)
                 graph[vv].add(ww)
