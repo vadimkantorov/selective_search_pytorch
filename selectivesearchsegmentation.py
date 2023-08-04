@@ -148,19 +148,17 @@ def bbox_merge(xywh1 : tuple, xywh2 : tuple) -> tuple:
     x2, y2 = max(xywh1[0] + xywh1[2] - 1, xywh2[0] + xywh2[2] - 1), max(xywh1[1] + xywh1[3] - 1, xywh2[1] + xywh2[3] - 1)
     return (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
 
-def bbox_per_segment(reg_lab : 'BHW', max_num_segments : int):
-    assert reg_lab.ndim == 3
+def bbox_per_segment(reg_lab : 'BHW', max_num_segments : int, dtype = torch.int16):
     img_height, img_width = reg_lab.shape[-2:]
-    
     # HxW, HxW
-    y, x = torch.meshgrid(torch.arange(img_height, dtype = torch.int16, device = reg_lab.device), torch.arange(img_width, dtype = torch.int16, device = reg_lab.device), indexing = 'ij')
+    y, x = torch.meshgrid(torch.arange(img_height, dtype = dtype, device = reg_lab.device), torch.arange(img_width, dtype = dtype, device = reg_lab.device), indexing = 'ij')
     y, x = y.expand_as(reg_lab).flatten(start_dim = -2), x.expand_as(reg_lab).flatten(start_dim = -2)
     
     reg_lab = reg_lab.flatten(start_dim = -2)
     # BxS, BxS, BxS, BxS
-    xywh = torch.tensor([ [[img_width]], [[img_height]], [[0]], [[0]] ], dtype = torch.int16, device = reg_lab.device).repeat(1, reg_lab.shape[0], max_num_segments)
-    xywh[0].scatter_reduce_(-1, reg_lab, x, reduce = 'amin')
-    xywh[1].scatter_reduce_(-1, reg_lab, y, reduce = 'amin')
+    xywh = torch.zeros(4, *reg_lab.shape[:-1], max_num_segments, dtype = dtype, device = reg_lab.device)
+    xywh[0].fill_(img_width).scatter_reduce_(-1, reg_lab, x, reduce = 'amin')
+    xywh[1].fill_(img_height).scatter_reduce_(-1, reg_lab, y, reduce = 'amin')
     xywh[2].scatter_reduce_(-1, reg_lab, x, reduce = 'amax')
     xywh[3].scatter_reduce_(-1, reg_lab, y, reduce = 'amax')
     xywh[2:] -= xywh[:2]
@@ -168,12 +166,11 @@ def bbox_per_segment(reg_lab : 'BHW', max_num_segments : int):
     # BxSx4
     return xywh.movedim(0, -1)
 
-def area_per_segment(reg_lab : 'BHW', max_num_segments : int):
-    assert reg_lab.ndim == 3
+def area_per_segment(reg_lab : 'BHW', max_num_segments : int, dtype = torch.float32):
     # Bx(HW)
     Z = reg_lab.flatten(start_dim = -2)
     # BxS
-    return torch.zeros((reg_lab.shape[0], max_num_segments), dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z))
+    return torch.zeros(*reg_lab.shape[:-2], max_num_segments, dtype = dtype).scatter_add_(-1, Z, expand_ones_like(Z, dtype = dtype))
 
 class SelectiveSearch(torch.nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
@@ -344,14 +341,14 @@ class HandcraftedRegionFeatures:
         # needed to work around https://github.com/pytorch/pytorch/issues/61819
         reg_lab_int64 = reg_lab.to(torch.int64)
         # (BxCxG)xS 
-        self.region_sizes = area_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments)
+        self.region_sizes = area_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments, dtype = torch.float32)
         # (BxCxG)xSx4
-        self.xywh = bbox_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments)
+        self.xywh = bbox_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments, dtype = torch.int16)
 
         # (BxCxG)x3x(HW)
         Z = (reg_lab[..., None, :, :] * color_hist_bins + imgs.mul((color_hist_bins - 1) / 255.0)).flatten(start_dim = -2).to(torch.int64)
         # (BxCxG)xSxD1 where S = #segments and D1 = 96
-        self.color_hist = torch.zeros(reg_lab.shape[:-2] + (img_channels, self.max_num_segments * color_hist_bins), dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, color_hist_bins)).movedim(-2, -3).flatten(start_dim = -2).contiguous()
+        self.color_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, self.max_num_segments * color_hist_bins, dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, color_hist_bins)).movedim(-2, -3).flatten(start_dim = -2)
         self.color_hist /= self.color_hist.sum(dim = -1, keepdim = True)
         # D1
         self.color_hist_buffer = torch.empty(self.color_hist.shape[-1], dtype = self.color_hist.dtype)
@@ -359,7 +356,7 @@ class HandcraftedRegionFeatures:
         # (BxCxG)x3xRx(HW)
         Z = (reg_lab[..., None, None, :, :] * texture_hist_bins + imgs_normalized_gaussian_grads.mul(texture_hist_bins - 1)).flatten(start_dim = -2).to(torch.int64)
         # (BxCxG)xSxD2 where S = #segments and D1 = 192
-        self.texture_hist = torch.zeros(reg_lab.shape[:-2] + (img_channels, imgs_normalized_gaussian_grads.shape[-3], self.max_num_segments * texture_hist_bins), dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3).contiguous()
+        self.texture_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, imgs_normalized_gaussian_grads.shape[-3], self.max_num_segments * texture_hist_bins, dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3)
         self.texture_hist /= self.texture_hist.sum(dim = -1, keepdim = True)
         # D2
         self.texture_hist_buffer = torch.empty(self.texture_hist.shape[-1], dtype = self.texture_hist.dtype)
