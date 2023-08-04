@@ -30,6 +30,7 @@ parser.add_argument('--input-path', '-i', default = 'astronaut.jpg')
 parser.add_argument('--output-path', '-o', default = 'test.png')
 parser.add_argument('--debugexit', action = 'store_true') 
 parser.add_argument('--compile', action = 'store_true') 
+parser.add_argument('--profile', action = 'store_true') 
 parser.add_argument('--topk', type = int, default = 64)
 parser.add_argument('--preset', choices = ['fast', 'quality', 'single'], default = 'fast')
 parser.add_argument('--algo', choices = ['pytorch', 'opencv', 'opencv_custom'], default = 'pytorch')
@@ -54,8 +55,14 @@ tic = toc = 0.0
 if args.algo in ['pytorch', 'opencv_custom']:
     algo = selectivesearchsegmentation.SelectiveSearch(preset = args.preset, compile = args.compile) if args.algo == 'pytorch' else selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = args.preset, lib_path = args.selectivesearchsegmentation_opencv_custom_so)
     tic = time.time()
-    boxes_xywh, regions, reg_lab = algo(img_rgb1chw_1)
+    if args.profile:
+        with torch.profiler.profile(activities = [torch.profiler.ProfilerActivity.CPU], record_shapes = True) as prof:
+            boxes_xywh, regions, reg_lab = algo(img_rgb1chw_1)
+        print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
+    else:
+        boxes_xywh, regions, reg_lab = algo(img_rgb1chw_1)
     toc = time.time()
+    
     regs = regions[0]
     mask = lambda k: algo.get_region_mask( reg_lab, [ regs[k] ] )[0]
     boxes_xywh = boxes_xywh[0].tolist()

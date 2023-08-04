@@ -10,6 +10,45 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
+def _rgb_to_hsv(image: torch.Tensor) -> torch.Tensor:
+    r, g, _ = image.unbind(dim=-3)
+
+    # Implementation is based on
+    # https://github.com/python-pillow/Pillow/blob/4174d4267616897df3746d315d5a2d0f82c656ee/src/libImaging/Convert.c#L330
+    minc, maxc = torch.aminmax(image, dim=-3)
+
+    # The algorithm erases S and H channel where `maxc = minc`. This avoids NaN
+    # from happening in the results, because
+    #   + S channel has division by `maxc`, which is zero only if `maxc = minc`
+    #   + H channel has division by `(maxc - minc)`.
+    #
+    # Instead of overwriting NaN afterwards, we just prevent it from occurring so
+    # we don't need to deal with it in case we save the NaN in a buffer in
+    # backprop, if it is ever supported, but it doesn't hurt to do so.
+    eqc = maxc == minc
+
+    channels_range = maxc - minc
+    # Since `eqc => channels_range = 0`, replacing denominator with 1 when `eqc` is fine.
+    ones = torch.ones_like(maxc)
+    s = channels_range / torch.where(eqc, ones, maxc)
+    # Note that `eqc => maxc = minc = r = g = b`. So the following calculation
+    # of `h` would reduce to `bc - gc + 2 + rc - bc + 4 + rc - bc = 6` so it
+    # would not matter what values `rc`, `gc`, and `bc` have here, and thus
+    # replacing denominator with 1 when `eqc` is fine.
+    channels_range_divisor = torch.where(eqc, ones, channels_range).unsqueeze_(dim=-3)
+    rc, gc, bc = ((maxc.unsqueeze(dim=-3) - image) / channels_range_divisor).unbind(dim=-3)
+
+    mask_maxc_neq_r = maxc != r
+    mask_maxc_eq_g = maxc == g
+
+    hg = rc.add(2.0).sub_(bc).mul_(mask_maxc_eq_g & mask_maxc_neq_r)
+    hr = bc.sub_(gc).mul_(~mask_maxc_neq_r)
+    hb = gc.add_(4.0).sub_(rc).mul_(mask_maxc_neq_r.logical_and_(mask_maxc_eq_g.logical_not_()))
+
+    h = hr.add_(hg).add_(hb)
+    h = h.mul_(1.0 / 6.0).add_(1.0).fmod_(1.0)
+    return torch.stack((h, s, maxc), dim=-3)
+
 def rgb_to_hsv(image, eps: float = 1e-6):
     # https://github.com/kornia/kornia/blob/master/kornia/color/hsv.py
     maxc, _ = image.max(-3)
@@ -222,7 +261,9 @@ class SelectiveSearch(torch.nn.Module):
 
         # all image planes will be in [0.0; 255.0]
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
-        hsv_ = torch.as_tensor(cv2.cvtColor(img[0].movedim(0, -1).numpy(), cv2.COLOR_RGB2HSV))
+        #_hsv = _rgb_to_hsv(img)
+        #hsv_ = torch.as_tensor(cv2.cvtColor(img[0].movedim(0, -1).numpy(), cv2.COLOR_RGB2HSV)) # 360, 1, 1
+        #breakpoint()
         
         hsv[..., 0, :, :] /= 2.0 * math.pi
         
@@ -345,20 +386,20 @@ class HandcraftedRegionFeatures:
         # (BxCxG)xSx4
         self.xywh = bbox_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments, dtype = torch.int16)
 
+
         # (BxCxG)x3x(HW)
         Z = (reg_lab[..., None, :, :] * color_hist_bins + imgs.mul((color_hist_bins - 1) / 255.0)).flatten(start_dim = -2).to(torch.int64)
         # (BxCxG)xSxD1 where S = #segments and D1 = 96
         self.color_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, self.max_num_segments * color_hist_bins, dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, color_hist_bins)).movedim(-2, -3).flatten(start_dim = -2)
         self.color_hist /= self.color_hist.sum(dim = -1, keepdim = True)
-        # D1
         self.color_hist_buffer = torch.empty(self.color_hist.shape[-1], dtype = self.color_hist.dtype)
+
 
         # (BxCxG)x3xRx(HW)
         Z = (reg_lab[..., None, None, :, :] * texture_hist_bins + imgs_normalized_gaussian_grads.mul(texture_hist_bins - 1)).flatten(start_dim = -2).to(torch.int64)
         # (BxCxG)xSxD2 where S = #segments and D1 = 192
         self.texture_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, imgs_normalized_gaussian_grads.shape[-3], self.max_num_segments * texture_hist_bins, dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3)
         self.texture_hist /= self.texture_hist.sum(dim = -1, keepdim = True)
-        # D2
         self.texture_hist_buffer = torch.empty(self.texture_hist.shape[-1], dtype = self.texture_hist.dtype)
 
     def compute_region_affinity(self, r1 = None, r2 = None, plane_idx = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
