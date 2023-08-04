@@ -109,9 +109,6 @@ def normalize_min_max(x, dim, eps = 1e-12):
     amin, amax = x.amin(dim = dim, keepdim = True), x.amax(dim = dim, keepdim = True)
     return (x - amin) / (eps + amax - amin) 
         
-def expand_dim(tensor : torch.Tensor, expand : int, dim : int) -> torch.Tensor:
-    return tensor.unsqueeze(dim).expand((-1, ) * (dim if dim >= 0 else tensor.ndim + dim + 1) + (expand, ) + (-1, ) * (tensor.ndim - (dim if dim >= 0 else tensor.ndim + dim + 1)))
-
 def expand_ones_like(tensor: torch.Tensor, dtype = torch.float32) -> torch.Tensor:
     # needed to work around https://github.com/pytorch/pytorch/issues/5405
     return torch.ones(1, device = tensor.device, dtype = dtype).expand_as(tensor)
@@ -156,11 +153,12 @@ def bbox_per_segment(reg_lab : 'BHW', max_num_segments : int):
     img_height, img_width = reg_lab.shape[-2:]
     
     # HxW, HxW
-    y, x = torch.meshgrid(torch.arange(reg_lab.shape[-2], dtype = torch.int16), torch.arange(reg_lab.shape[-1], dtype = torch.int16), indexing = 'ij')
-    y, x = expand_dim(y, reg_lab.shape[0], dim = 0).flatten(start_dim = -2), expand_dim(x, reg_lab.shape[0], dim = 0).flatten(start_dim = -2)
+    y, x = torch.meshgrid(torch.arange(img_height, dtype = torch.int16, device = reg_lab.device), torch.arange(img_width, dtype = torch.int16, device = reg_lab.device), indexing = 'ij')
+    y, x = y.unsqueeze(0).expand_as(reg_lab).flatten(start_dim = -2), x.unsqueeze(0).expand_as(reg_lab).flatten(start_dim = -2)
+    
     reg_lab = reg_lab.flatten(start_dim = -2)
     # BxS, BxS, BxS, BxS
-    xywh = torch.tensor([ [[img_width]], [[img_height]], [[0]], [[0]] ], dtype = torch.int16).repeat(1, reg_lab.shape[0], max_num_segments)
+    xywh = torch.tensor([ [[img_width]], [[img_height]], [[0]], [[0]] ], dtype = torch.int16, device = reg_lab.device).repeat(1, reg_lab.shape[0], max_num_segments)
     xywh[0].scatter_reduce_(-1, reg_lab, x, reduce = 'amin')
     xywh[1].scatter_reduce_(-1, reg_lab, y, reduce = 'amin')
     xywh[2].scatter_reduce_(-1, reg_lab, x, reduce = 'amax')
@@ -251,9 +249,13 @@ class SelectiveSearch(torch.nn.Module):
         max_num_segments = int(num_segments.amax())
         print('image seg', time.time() - tic); tic = time.time()
 
+        
+        expand_dim = lambda tensor, expand, dim: tensor.unsqueeze(dim).expand((-1, ) * (dim if dim >= 0 else tensor.ndim + dim + 1) + (expand, ) + (-1, ) * (tensor.ndim - (dim if dim >= 0 else tensor.ndim + dim + 1)))
+
+        breakpoint()
         features = HandcraftedRegionFeatures(expand_dim(imgs, len(self.segmentations), dim = 2).flatten(end_dim = 2), expand_dim(imgs_normalized_gaussian_grads, len(self.segmentations), dim = 2).flatten(end_dim = 2), reg_lab.flatten(end_dim = 2), max_num_segments = max_num_segments)
         affinity = features.compute_region_affinity()
-        features.repeat_features_times_strategies_and_flatten(len(self.strategies))
+        features.repeat_for_strategies_and_flatten(len(self.strategies))
         print('region feat', time.time() - tic)
         
         graphadj = self.build_graph(reg_lab, max_num_segments = max_num_segments).flatten(end_dim = -3)
@@ -334,11 +336,11 @@ class SelectiveSearch(torch.nn.Module):
         return new_edges
 
 class HandcraftedRegionFeatures:
-    def __init__(self, imgs : 'B3HW', imgs_normalized_gaussian_grads : 'BCGHW', reg_lab : '(BCG)HW', max_num_segments: int, color_hist_bins = 32, texture_hist_bins = 8):
+    def __init__(self, imgs : '(BCG)3HW', imgs_normalized_gaussian_grads : '(BCG)3RHW', reg_lab : '(BCG)HW', max_num_segments: int, color_hist_bins = 32, texture_hist_bins = 8):
         img_channels, img_height, img_width = imgs.shape[-3:]
         self.max_num_segments : int = max_num_segments
         self.img_size : int = img_height * img_width
-        
+       
         # needed to work around https://github.com/pytorch/pytorch/issues/61819
         reg_lab_int64 = reg_lab.to(torch.int64)
         # (BxCxG)xS 
@@ -357,6 +359,7 @@ class HandcraftedRegionFeatures:
         # (BxCxG)x3xRx(HW)
         Z = (reg_lab[..., None, None, :, :] * texture_hist_bins + imgs_normalized_gaussian_grads.mul(texture_hist_bins - 1)).flatten(start_dim = -2).to(torch.int64)
         # (BxCxG)xSxD2 where S = #segments and D1 = 192
+        breakpoint()
         self.texture_hist = torch.zeros(reg_lab.shape[:-2] + (img_channels, imgs_normalized_gaussian_grads.shape[-3], self.max_num_segments * texture_hist_bins), dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3).contiguous()
         self.texture_hist /= self.texture_hist.sum(dim = -1, keepdim = True)
         # D2
@@ -406,12 +409,8 @@ class HandcraftedRegionFeatures:
         return self.xywh_[plane_idx + r2]
 
         
-    def repeat_features_times_strategies_and_flatten(self, num_strategies):
+    def repeat_for_strategies_and_flatten(self, num_strategies):
         self.region_sizes_ = self.region_sizes.unsqueeze(-2).repeat(1, num_strategies, 1).flatten().tolist()
         self.xywh_ = self.xywh.unsqueeze(-3).repeat(1, num_strategies, 1, 1).flatten(end_dim = -2).tolist()
         self.color_hist_ = self.color_hist.unsqueeze(-3).repeat(1, num_strategies, 1, 1).flatten(end_dim = -2)
         self.texture_hist_ = self.texture_hist.unsqueeze(-3).repeat(1, num_strategies, 1, 1).flatten(end_dim = -2)
-        #self.region_sizes_ = expand_dim(self.region_sizes, num_strategies, dim = -2).flatten().tolist()
-        #self.xywh_ = expand_dim(self.xywh, num_strategies, dim = -3).flatten(end_dim = -2).tolist()
-        #self.color_hist_ = expand_dim(self.color_hist, num_strategies, dim = -3).flatten(end_dim = -2)
-        #self.texture_hist_ = expand_dim(self.texture_hist, num_strategies, dim = -3).flatten(end_dim = -2)
