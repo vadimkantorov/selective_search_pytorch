@@ -278,6 +278,7 @@ class SelectiveSearch(torch.nn.Module):
         print('image feat', time.time() - tic); tic = time.time()
 
         # BxCxGxHxW (C = #colorspaces, G = #graphsegs)
+        # https://github.com/opencv/opencv_contrib/issues/3544 seems that float32 [0.0, 1.0] inputs are not correctly supported
         reg_lab = self.postprocess_labels(torch.stack([torch.as_tensor(gs.processImage(img)) for img in imgs.flatten(end_dim = -4).movedim(-3, -1).mul(255.0).numpy() for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),)))
         # BxCxG
         num_segments = reg_lab.amax(dim = (-2, -1)).add_(1)
@@ -304,7 +305,6 @@ class SelectiveSearch(torch.nn.Module):
         graphadj = (graphadj[..., None, None] * affinity.unsqueeze(-2) * self.strategies).sum(dim = -1)
         #graphadj.masked_fill_(graphadj.isnan(), 0)
 
-        breakpoint()
         # (BCGT)xSxS
         ga = graphadj.movedim(-1, -3).flatten(end_dim = -3)
         # (BCGT)xSxS
