@@ -72,6 +72,7 @@ if args.algo in ['pytorch', 'opencv_custom']:
 else:
     algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
     algo.setBaseImage(img_bgrhwc_255)
+    #algo.setBaseImage(img_rgb1chw_1[0].movedim(-3, -1).contiguous().numpy())
     dict(fast = algo.switchToSelectiveSearchFast, quality = algo.switchToSelectiveSearchQuality, single = algo.switchToSingleStrategy)[args.preset]()
     tic = time.time()
     boxes_xywh = algo.process()

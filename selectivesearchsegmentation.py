@@ -142,10 +142,10 @@ def image_gaussian_grads(img : 'BCHW'):
 
     return torch.cat([grads.clamp(min = 0), grads.clamp(max = 0), grads_rotated.clamp(min = 0), grads_rotated.clamp(max = 0)], dim = -3)
 
-def normalize_min_max(x, dim, eps = 1e-12):
+def normalize_min_max_(x, dim, eps = 1e-12):
     # https://github.com/pytorch/pytorch/issues/61582
     amin, amax = x.amin(dim = dim, keepdim = True), x.amax(dim = dim, keepdim = True)
-    return (x - amin) / (eps + amax - amin) 
+    return x.sub_(amin).div_(amax.sub_(amin).add_(eps)) 
         
 def expand_ones_like(tensor: torch.Tensor, dtype = torch.float32) -> torch.Tensor:
     # needed to work around https://github.com/pytorch/pytorch/issues/5405
@@ -212,7 +212,7 @@ def area_per_segment(reg_lab : 'BHW', max_num_segments : int, dtype = torch.floa
 
 class SelectiveSearch(torch.nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
-    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', postprocess_labels = None, compile = False):
+    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', postprocess_labels = None, compile = False, color_hist_bins = 8 * 4, texture_hist_bins = 8):
         super().__init__()
         self.base_k = base_k
         self.inc_k = inc_k
@@ -220,6 +220,8 @@ class SelectiveSearch(torch.nn.Module):
         self.min_size = min_size
         self.preset = preset
         self.compile = compile
+        self.color_hist_bins = color_hist_bins
+        self.texture_hist_bins = texture_hist_bins
         self.postprocess_labels = postprocess_labels if postprocess_labels is not None else (lambda reg_lab: reg_lab)
 
         if self.preset == 'single': # base_k = 200
@@ -261,33 +263,36 @@ class SelectiveSearch(torch.nn.Module):
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
         #_hsv = _rgb_to_hsv(img)
         #hsv_ = torch.as_tensor(cv2.cvtColor(img[0].movedim(0, -1).numpy(), cv2.COLOR_RGB2HSV)) # 360, 1, 1
-        #breakpoint()
         
         hsv[..., 0, :, :] /= 2.0 * math.pi
         
         lab[..., 0, :, :] /= 100.0
         lab[..., 1:,:, :] /= 255.0
         lab[..., 1:,:, :] += 128/255.0
+        # BxCx3xHxW
         imgs = self.images(img, hsv, lab, gray)
-        imgs *= 255.0
-
         
         # BxCxGxRxHxW (R = #rotations)
-        imgs_normalized_gaussian_grads = normalize_min_max(image_gaussian_grads(imgs.flatten(end_dim = -4)).unflatten(0, imgs.shape[:-3]), dim = (-2, -1))
+        grads = normalize_min_max_(image_gaussian_grads(imgs.flatten(end_dim = -4)).unflatten(0, imgs.shape[:-3]), dim = (-2, -1))
         print('image feat', time.time() - tic); tic = time.time()
 
         # BxCxGxHxW (C = #colorspaces, G = #graphsegs)
-        reg_lab = self.postprocess_labels(torch.stack([torch.as_tensor(gs.processImage(img.movedim(-3, -1).numpy())) for img in imgs.flatten(end_dim = -4) for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),)))
+        reg_lab = self.postprocess_labels(torch.stack([torch.as_tensor(gs.processImage(img)) for img in imgs.flatten(end_dim = -4).movedim(-3, -1).mul(255.0).numpy() for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),)))
+        breakpoint()
         # BxCxG
         num_segments = reg_lab.amax(dim = (-2, -1)).add_(1)
         max_num_segments = int(num_segments.amax())
         print('image seg', time.time() - tic); tic = time.time()
 
+        breakpoint()
         region_features = HandcraftedRegionFeatures(
-            imgs.unsqueeze(2).repeat(1, 1, len(self.segmentations), 1, 1, 1).flatten(end_dim = 2),
-            imgs_normalized_gaussian_grads.unsqueeze(2).repeat(1, 1, len(self.segmentations), 1, 1, 1, 1).flatten(end_dim = 2),
-            reg_lab.flatten(end_dim = 2), 
-            max_num_segments = max_num_segments
+            imgs_bins = imgs.mul(self.color_hist_bins - 1).to(torch.int32).unsqueeze(2).repeat(1, 1, len(self.segmentations), 1, 1, 1).flatten(end_dim = 2),
+            grads_bins = grads.mul(self.texture_hist_bins - 1).to(torch.int32).unsqueeze(2).repeat(1, 1, len(self.segmentations), 1, 1, 1, 1).flatten(end_dim = 2),
+            reg_lab = reg_lab.flatten(end_dim = 2), 
+            
+            max_num_segments = max_num_segments,
+            color_hist_bins = self.color_hist_bins,
+            texture_hist_bins = self.texture_hist_bins
         )
         affinity = region_features.compute_region_affinity()
         region_features.repeat_for_strategies_and_flatten(len(self.strategies))
@@ -375,8 +380,8 @@ class SelectiveSearch(torch.nn.Module):
         return new_edges
 
 class HandcraftedRegionFeatures:
-    def __init__(self, imgs : '(BCG)3HW', imgs_normalized_gaussian_grads : '(BCG)3RHW', reg_lab : '(BCG)HW', max_num_segments: int, color_hist_bins = 32, texture_hist_bins = 8):
-        img_channels, img_height, img_width = imgs.shape[-3:]
+    def __init__(self, imgs_bins: '(BCG)3HW', grads_bins: '(BCG)3RHW', reg_lab : '(BCG)HW', max_num_segments: int, color_hist_bins, texture_hist_bins):
+        img_channels, img_height, img_width = imgs_bins.shape[-3:]
         self.max_num_segments : int = max_num_segments
         self.img_size : int = img_height * img_width
        
@@ -387,9 +392,8 @@ class HandcraftedRegionFeatures:
         # (BxCxG)xSx4
         self.xywh = bbox_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments, dtype = torch.int16)
 
-
         # (BxCxG)x3x(HW)
-        Z = (reg_lab[..., None, :, :] * color_hist_bins + imgs.mul((color_hist_bins - 1) / 255.0)).flatten(start_dim = -2).to(torch.int64)
+        Z = (reg_lab[..., None, :, :] * color_hist_bins + imgs_bins).flatten(start_dim = -2).to(torch.int64)
         # (BxCxG)xSxD1 where S = #segments and D1 = 96
         self.color_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, self.max_num_segments * color_hist_bins, dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, color_hist_bins)).movedim(-2, -3).flatten(start_dim = -2)
         self.color_hist /= self.color_hist.sum(dim = -1, keepdim = True)
@@ -397,9 +401,9 @@ class HandcraftedRegionFeatures:
 
 
         # (BxCxG)x3xRx(HW)
-        Z = (reg_lab[..., None, None, :, :] * texture_hist_bins + imgs_normalized_gaussian_grads.mul(texture_hist_bins - 1)).flatten(start_dim = -2).to(torch.int64)
+        Z = (reg_lab[..., None, None, :, :] * texture_hist_bins + grads_bins).flatten(start_dim = -2).to(torch.int64)
         # (BxCxG)xSxD2 where S = #segments and D1 = 192
-        self.texture_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, imgs_normalized_gaussian_grads.shape[-3], self.max_num_segments * texture_hist_bins, dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3)
+        self.texture_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, grads_bins.shape[-3], self.max_num_segments * texture_hist_bins, dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3)
         self.texture_hist /= self.texture_hist.sum(dim = -1, keepdim = True)
         self.texture_hist_buffer = torch.empty(self.texture_hist.shape[-1], dtype = self.texture_hist.dtype)
 

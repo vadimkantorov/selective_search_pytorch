@@ -38,6 +38,7 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
         height, width = img.shape[-2:]
         
         img_bgrchw_255 = img.movedim(-3, -1).mul(255).to(torch.uint8).flip(-1).contiguous()
+        img_rgbhwc_1 = img.movedim(-3, -1).contiguous()
 
         rects = torch.zeros( (img.shape[0], self.max_num_rects, 4), dtype = torch.int32)
         reg   = torch.zeros( (img.shape[0], self.max_num_rects, 3), dtype = torch.int32)
@@ -47,6 +48,7 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
         boxes_xywh, regions, reg_lab = [], [], []
 
         for k, i in enumerate(img_bgrchw_255):
+        #for k, i in enumerate(img_bgrchw_255):
             self.bind_num_rects.value = self.max_num_rects
             self.bind_num_seg.value = self.max_num_seg
             
