@@ -220,7 +220,8 @@ class SelectiveSearch(torch.nn.Module):
         self.min_size = min_size
         self.preset = preset
         self.compile = compile
-        
+        self.postprocess_labels = postprocess_labels if postprocess_labels is not None else (lambda reg_lab: reg_lab)
+
         if self.preset == 'single': # base_k = 200
             self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4)
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(base_k), self.min_size)]
@@ -276,10 +277,9 @@ class SelectiveSearch(torch.nn.Module):
         print('image feat', time.time() - tic); tic = time.time()
 
         # BxCxGxHxW (C = #colorspaces, G = #graphsegs)
-        reg_lab = torch.stack([torch.as_tensor(gs.processImage(img.movedim(-3, -1).numpy())) for img in imgs.flatten(end_dim = -4) for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),))
-        reg_lab = self.postprocess_labels(reg_lab)
+        reg_lab = self.postprocess_labels(torch.stack([torch.as_tensor(gs.processImage(img.movedim(-3, -1).numpy())) for img in imgs.flatten(end_dim = -4) for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),)))
         # BxCxG
-        num_segments = 1 + reg_lab.amax(dim = (-2, -1))
+        num_segments = reg_lab.amax(dim = (-2, -1)).add_(1)
         max_num_segments = int(num_segments.amax())
         print('image seg', time.time() - tic); tic = time.time()
 
@@ -339,7 +339,7 @@ class SelectiveSearch(torch.nn.Module):
         boxes_xywh_without_duplicates = [{reg['bbox_xywh'] : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
         
         boxes_xywh = [torch.tensor(list(boxes_xywh_without_duplicates[b].keys()), dtype = torch.int16) for b in range(len(img))]
-        regions = [[by_image[b][i] for i in without_duplicates[b].values()] for b in range(len(img))]
+        regions = [[by_image[b][i] for i in boxes_xywh_without_duplicates[b].values()] for b in range(len(img))]
 
         return boxes_xywh, regions, reg_lab
     
