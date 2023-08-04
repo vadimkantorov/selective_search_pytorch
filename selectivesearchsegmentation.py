@@ -3,7 +3,6 @@ import cv2.ximgproc.segmentation
 import time
 import math
 import heapq
-import random
 import itertools
 
 import torch
@@ -213,7 +212,7 @@ def area_per_segment(reg_lab : 'BHW', max_num_segments : int, dtype = torch.floa
 
 class SelectiveSearch(torch.nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
-    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', compute_region_rank = None, postprocess_labels = None, compile = False):
+    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', postprocess_labels = None, compile = False):
         super().__init__()
         self.base_k = base_k
         self.inc_k = inc_k
@@ -221,8 +220,6 @@ class SelectiveSearch(torch.nn.Module):
         self.min_size = min_size
         self.preset = preset
         self.compile = compile
-        self.compute_region_rank = compute_region_rank if compute_region_rank is not None else (lambda reg: reg['level'] * random.random())
-        self.postprocess_labels = postprocess_labels if postprocess_labels is not None else (lambda reg_lab: reg_lab)
         
         if self.preset == 'single': # base_k = 200
             self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4)
@@ -253,7 +250,7 @@ class SelectiveSearch(torch.nn.Module):
     def get_region_mask(reg_lab, regs):
         return torch.stack([(reg_lab[reg['plane_id'][:-1]][..., None] == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
 
-    def forward(self, img : 'B3HW'):
+    def forward(self, img : 'B3HW', generator = None):
         img = torch.as_tensor(img).contiguous()
         assert img.is_floating_point() and img.ndim == 4 and img.shape[-3] == 3
 
@@ -331,8 +328,8 @@ class SelectiveSearch(torch.nn.Module):
             for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_id'], region_features, regs, graph):
                 heapq.heappush(PQ, new_edge)
         
-        for reg in regs:
-            reg['rank'] = self.compute_region_rank(reg)
+        for reg, randuniform01 in zip(regs, torch.rand(len(regs), generator = generator).tolist()):
+            reg['rank'] = reg['level'] * randuniform01 
 
         print('merge reg', region_features.merge_regions_counter, region_features.merge_regions_time)
         print('sim reg', region_features.compute_region_affinity_counter, region_features.compute_region_affinity_time)
