@@ -336,8 +336,12 @@ class SelectiveSearch(torch.nn.Module):
 
         key_img_id, key_rank = (lambda reg: reg['plane_id'][0]), (lambda reg: reg['rank'])
         by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 0], key = key_img_id), key = key_img_id)}
-        without_duplicates = [{reg['bbox_xywh'] : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
-        return [torch.tensor(list(without_duplicates[b].keys()), dtype = torch.int16) for b in range(len(img))], [[by_image[b][i] for i in without_duplicates[b].values()] for b in range(len(img))], reg_lab
+        boxes_xywh_without_duplicates = [{reg['bbox_xywh'] : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
+        
+        boxes_xywh = [torch.tensor(list(boxes_xywh_without_duplicates[b].keys()), dtype = torch.int16) for b in range(len(img))]
+        regions = [[by_image[b][i] for i in without_duplicates[b].values()] for b in range(len(img))]
+
+        return boxes_xywh, regions, reg_lab
     
     @staticmethod
     def build_graph(reg_lab : 'BIGHW', max_num_segments : int):
