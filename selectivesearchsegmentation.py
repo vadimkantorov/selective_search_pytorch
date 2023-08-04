@@ -154,7 +154,7 @@ def bbox_per_segment(reg_lab : 'BHW', max_num_segments : int):
     
     # HxW, HxW
     y, x = torch.meshgrid(torch.arange(img_height, dtype = torch.int16, device = reg_lab.device), torch.arange(img_width, dtype = torch.int16, device = reg_lab.device), indexing = 'ij')
-    y, x = y.unsqueeze(0).expand_as(reg_lab).flatten(start_dim = -2), x.unsqueeze(0).expand_as(reg_lab).flatten(start_dim = -2)
+    y, x = y.expand_as(reg_lab).flatten(start_dim = -2), x.expand_as(reg_lab).flatten(start_dim = -2)
     
     reg_lab = reg_lab.flatten(start_dim = -2)
     # BxS, BxS, BxS, BxS
@@ -172,7 +172,7 @@ def area_per_segment(reg_lab : 'BHW', max_num_segments : int):
     assert reg_lab.ndim == 3
     # Bx(HW)
     Z = reg_lab.flatten(start_dim = -2)
-    # (BxCxG)xS
+    # BxS
     return torch.zeros((reg_lab.shape[0], max_num_segments), dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z))
 
 class SelectiveSearch(torch.nn.Module):
@@ -226,7 +226,6 @@ class SelectiveSearch(torch.nn.Module):
         # all image planes will be in [0.0; 255.0]
         hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
         hsv_ = torch.as_tensor(cv2.cvtColor(img[0].movedim(0, -1).numpy(), cv2.COLOR_RGB2HSV))
-        #breakpoint()
         
         hsv[..., 0, :, :] /= 2.0 * math.pi
         
@@ -249,10 +248,12 @@ class SelectiveSearch(torch.nn.Module):
         max_num_segments = int(num_segments.amax())
         print('image seg', time.time() - tic); tic = time.time()
 
-        
-        expand_dim = lambda tensor, expand, dim: tensor.unsqueeze(dim).expand((-1, ) * (dim if dim >= 0 else tensor.ndim + dim + 1) + (expand, ) + (-1, ) * (tensor.ndim - (dim if dim >= 0 else tensor.ndim + dim + 1)))
-
-        region_features = HandcraftedRegionFeatures(expand_dim(imgs, len(self.segmentations), dim = 2).flatten(end_dim = 2), expand_dim(imgs_normalized_gaussian_grads, len(self.segmentations), dim = 2).flatten(end_dim = 2), reg_lab.flatten(end_dim = 2), max_num_segments = max_num_segments)
+        region_features = HandcraftedRegionFeatures(
+            imgs.unsqueeze(2).repeat(1, 1, len(self.segmentations), 1, 1, 1).flatten(end_dim = 2),
+            imgs_normalized_gaussian_grads.unsqueeze(2).repeat(1, 1, len(self.segmentations), 1, 1, 1, 1).flatten(end_dim = 2),
+            reg_lab.flatten(end_dim = 2), 
+            max_num_segments = max_num_segments
+        )
         affinity = region_features.compute_region_affinity()
         region_features.repeat_for_strategies_and_flatten(len(self.strategies))
         print('region feat', time.time() - tic)
@@ -272,7 +273,7 @@ class SelectiveSearch(torch.nn.Module):
         plane_idx *= max_num_segments
         graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((plane_idx + r1).tolist(), (plane_idx + r2).tolist()), key = lambda t: t[0])}
         
-        regs = [dict(plane_id = (b, c, g, s), id = r1, plane_idx = plane_idx, level = 0 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(regoin_features.xywh_[plane_idx * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for plane_idx, (b, c, g, s, strategy) in enumerate((b, c, g, s, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
+        regs = [dict(plane_id = (b, c, g, s), id = r1, plane_idx = plane_idx, level = 0 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(region_features.xywh_[plane_idx * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for plane_idx, (b, c, g, s, strategy) in enumerate((b, c, g, s, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for s, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
         region_features.merge_regions_counter, region_features.merge_regions_time = 0, 0.0
         region_features.compute_region_affinity_counter, region_features.compute_region_affinity_time = 0, 0.00
@@ -358,7 +359,6 @@ class HandcraftedRegionFeatures:
         # (BxCxG)x3xRx(HW)
         Z = (reg_lab[..., None, None, :, :] * texture_hist_bins + imgs_normalized_gaussian_grads.mul(texture_hist_bins - 1)).flatten(start_dim = -2).to(torch.int64)
         # (BxCxG)xSxD2 where S = #segments and D1 = 192
-        breakpoint()
         self.texture_hist = torch.zeros(reg_lab.shape[:-2] + (img_channels, imgs_normalized_gaussian_grads.shape[-3], self.max_num_segments * texture_hist_bins), dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3).contiguous()
         self.texture_hist /= self.texture_hist.sum(dim = -1, keepdim = True)
         # D2
