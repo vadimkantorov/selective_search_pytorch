@@ -270,7 +270,7 @@ class SelectiveSearch(torch.nn.Module):
         lab[..., 1:,:, :] /= 255.0
         lab[..., 1:,:, :] += 128/255.0
         
-        # BxCx3xHxW
+        # BxCx3xHxW in [0.0, 1.0]
         imgs = self.images(img, hsv, lab, gray)
         
         # BxCxGxRxHxW (R = #rotations)
