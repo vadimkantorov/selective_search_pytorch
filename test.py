@@ -113,7 +113,6 @@ for k in range(args.grid * args.grid - 1):
     x, y, w, h = boxes_xywh[k]
     
     plt.imshow((img_rgbhwc_255 * m[..., None] + img_rgbhwc_255 * m[..., None].logical_not() // 10).to(torch.uint8), aspect = 'auto')
-    
     plt.gca().add_patch(matplotlib.patches.Rectangle((x, y), w, h, linewidth = 1, edgecolor = 'r', facecolor = 'none'))
     plt.axis('off')
 
@@ -128,7 +127,6 @@ if not l2r:
 
 fig = plt.figure(figsize = (args.grid, args.grid))
 fig.set_tight_layout(True)
-#fig.subplots_adjust(0, 0, 1, 1, wspace = 0, hspace = 0)
 
 def update(level, im = []):
     for reg in l2r[level]:
