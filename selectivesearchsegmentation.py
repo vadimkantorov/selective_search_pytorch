@@ -186,29 +186,29 @@ def bbox_merge(xywh1 : tuple, xywh2 : tuple) -> tuple:
     x2, y2 = max(xywh1[0] + xywh1[2] - 1, xywh2[0] + xywh2[2] - 1), max(xywh1[1] + xywh1[3] - 1, xywh2[1] + xywh2[3] - 1)
     return (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
 
-def bbox_per_segment(reg_lab : 'BHW', max_num_segments : int, dtype = torch.int16):
-    img_height, img_width = reg_lab.shape[-2:]
+def bbox_per_segment(reg_lab_int64 : 'BHW', max_num_segments : int, dtype = torch.int16):
+    img_height, img_width = reg_lab_int64.shape[-2:]
     # HxW, HxW
-    y, x = torch.meshgrid(torch.arange(img_height, dtype = dtype, device = reg_lab.device), torch.arange(img_width, dtype = dtype, device = reg_lab.device), indexing = 'ij')
-    y, x = y.expand_as(reg_lab).flatten(start_dim = -2), x.expand_as(reg_lab).flatten(start_dim = -2)
+    y, x = torch.meshgrid(torch.arange(img_height, dtype = dtype, device = reg_lab_int64.device), torch.arange(img_width, dtype = dtype, device = reg_lab_int64.device), indexing = 'ij')
+    y, x = y.expand_as(reg_lab_int64).flatten(start_dim = -2), x.expand_as(reg_lab_int64).flatten(start_dim = -2)
     
-    reg_lab = reg_lab.flatten(start_dim = -2)
+    reg_lab_int64 = reg_lab_int64.flatten(start_dim = -2)
     # BxS, BxS, BxS, BxS
-    xywh = torch.zeros(4, *reg_lab.shape[:-1], max_num_segments, dtype = dtype, device = reg_lab.device)
-    xywh[0].fill_(img_width).scatter_reduce_(-1, reg_lab, x, reduce = 'amin')
-    xywh[1].fill_(img_height).scatter_reduce_(-1, reg_lab, y, reduce = 'amin')
-    xywh[2].scatter_reduce_(-1, reg_lab, x, reduce = 'amax')
-    xywh[3].scatter_reduce_(-1, reg_lab, y, reduce = 'amax')
+    xywh = torch.zeros(4, *reg_lab_int64.shape[:-1], max_num_segments, dtype = dtype, device = reg_lab_int64.device)
+    xywh[0].fill_(img_width).scatter_reduce_(-1, reg_lab_int64, x, reduce = 'amin')
+    xywh[1].fill_(img_height).scatter_reduce_(-1, reg_lab_int64, y, reduce = 'amin')
+    xywh[2].scatter_reduce_(-1, reg_lab_int64, x, reduce = 'amax')
+    xywh[3].scatter_reduce_(-1, reg_lab_int64, y, reduce = 'amax')
     xywh[2:] -= xywh[:2]
     
     # BxSx4
     return xywh.movedim(0, -1)
 
-def area_per_segment(reg_lab : 'BHW', max_num_segments : int, dtype = torch.float32):
+def area_per_segment(reg_lab_int64 : 'BHW', max_num_segments : int, dtype = torch.int32):
     # Bx(HW)
-    Z = reg_lab.flatten(start_dim = -2)
+    Z = reg_lab_int64.flatten(start_dim = -2)
     # BxS
-    return torch.zeros(*reg_lab.shape[:-2], max_num_segments, dtype = dtype).scatter_add_(-1, Z, expand_ones_like(Z, dtype = dtype))
+    return torch.zeros(*reg_lab_int64.shape[:-2], max_num_segments, dtype = dtype).scatter_add_(-1, Z, expand_ones_like(Z, dtype = dtype))
 
 class SelectiveSearch(torch.nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
@@ -303,7 +303,6 @@ class SelectiveSearch(torch.nn.Module):
         graphadj = self.build_graph(reg_lab, max_num_segments = max_num_segments).flatten(end_dim = -3)
         # (BCG)xSxSxT (T = # sTrategies)
         graphadj = (graphadj[..., None, None] * affinity.unsqueeze(-2) * self.strategies).sum(dim = -1)
-        #graphadj.masked_fill_(graphadj.isnan(), 0)
 
         # (BCGT)xSxS
         ga = graphadj.movedim(-1, -3).flatten(end_dim = -3)
@@ -386,7 +385,7 @@ class SelectiveSearch(torch.nn.Module):
         return new_edges
 
 class HandcraftedRegionFeatures:
-    def __init__(self, imgs_bins: 'BCG3HW', grads_bins: 'BCG3RHW', reg_lab : 'BCGHW', max_num_segments: int, color_hist_bins, texture_hist_bins, eps = 1e-12):
+    def __init__(self, imgs_bins: 'BCG3HW', grads_bins: 'BCG3RHW', reg_lab : 'BCGHW', max_num_segments: int, color_hist_bins : int, texture_hist_bins : int, eps : float = 1e-12):
         img_channels, img_height, img_width = imgs_bins.shape[-3:]
         self.max_num_segments : int = max_num_segments
         self.img_size : int = img_height * img_width
@@ -394,30 +393,32 @@ class HandcraftedRegionFeatures:
         # needed to work around https://github.com/pytorch/pytorch/issues/61819
         reg_lab_int64 = reg_lab.to(torch.int64)
         # BxCxGxS 
-        self.region_sizes = area_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments, dtype = torch.float32)
+        self.region_sizes = area_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments, dtype = torch.int32)
         # BxCxGxSx4
         self.xywh = bbox_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments, dtype = torch.int16)
 
         # BxCxGx3x(HW), img_bins is broadcasted
-        Z = (reg_lab[..., None, :, :] * color_hist_bins + imgs_bins).flatten(start_dim = -2).to(torch.int64)
+        Z = (reg_lab[..., None, :, :] * color_hist_bins + imgs_bins).flatten(start_dim = -2)
         # BxCxGxSxD1 (f32) where S = #segments and D1 = 96
-        self.color_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, self.max_num_segments * color_hist_bins, dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, color_hist_bins)).movedim(-2, -3).flatten(start_dim = -2)
-        self.color_hist /= self.color_hist.sum(dim = -1, keepdim = True).add_(eps)
+        self.color_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, self.max_num_segments * color_hist_bins, dtype = torch.float32).scatter_add_(-1, Z.to(torch.int64), expand_ones_like(Z, dtype = torch.float32)).unflatten(-1, (self.max_num_segments, color_hist_bins)).movedim(-2, -3).flatten(start_dim = -2)
+        # for histogram normalization, each pixel contributes to 3 = #colorchannels bins, eps to avoid divbyzero and nans in affinity
+        self.color_hist /= self.region_sizes.mul(float(imgs_bins.shape[-3])).add_(eps).unsqueeze(-1)
         # 3*N (f32) where 3 = #colorchannels, N = #colorbins
         self.color_hist_buffer = torch.empty(self.color_hist.shape[-1], dtype = self.color_hist.dtype)
 
         # BxCxGx3xRx(HW), grads_bins is broadcasted
-        Z = (reg_lab[..., None, None, :, :] * texture_hist_bins + grads_bins).flatten(start_dim = -2).to(torch.int64)
+        Z = (reg_lab[..., None, None, :, :] * texture_hist_bins + grads_bins).flatten(start_dim = -2)
         # BxCxGxSxD2 (f32) where S = #segments and D1 = 192
-        self.texture_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, grads_bins.shape[-3], self.max_num_segments * texture_hist_bins, dtype = torch.float32).scatter_add_(-1, Z, expand_ones_like(Z)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3)
-        self.texture_hist /= self.texture_hist.sum(dim = -1, keepdim = True).add_(eps)
+        self.texture_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, grads_bins.shape[-3], self.max_num_segments * texture_hist_bins, dtype = torch.float32).scatter_add_(-1, Z.to(torch.int64), expand_ones_like(Z, dtype = torch.float32)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3)
+        # for histogram normalization, each pixel contributes to (3 = #colorchannels) * (8 = #rotations) bins, maybe except exactly 0textures which contribute to several bins, eps to avoid divbyzero and nans in affinity
+        self.texture_hist /= self.region_sizes.mul(float(grads_bins.shape[-4] * grads_bins.shape[-3])).add_(eps).unsqueeze(-1)
         # 3*N (f32) where 3 = #colorchannels, N = #texturebins
         self.texture_hist_buffer = torch.empty(self.texture_hist.shape[-1], dtype = self.texture_hist.dtype)
 
     def compute_region_affinity(self, r1 = None, r2 = None, plane_idx = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
         if r1 is None and r2 is None:
-            size_affinity = self.region_sizes.unsqueeze(-1).add(self.region_sizes.unsqueeze(-2)).div_(-self.img_size).add_(1).clamp_(min = 0, max = 1)
-            fill_affinity = bbox_merge_tensor(self.xywh.unsqueeze(-2), self.xywh.unsqueeze(-3), dtype = self.region_sizes.dtype).sub_(self.region_sizes.unsqueeze(-1)).sub_(self.region_sizes.unsqueeze(-2)).div_(-self.img_size).add_(1).clamp_(min = 0, max = 1)
+            size_affinity = self.region_sizes.unsqueeze(-1).add(self.region_sizes.unsqueeze(-2)).div(-float(self.img_size)).add_(1).clamp_(min = 0, max = 1)
+            fill_affinity = bbox_merge_tensor(self.xywh.unsqueeze(-2), self.xywh.unsqueeze(-3), dtype = self.region_sizes.dtype).sub_(self.region_sizes.unsqueeze(-1)).sub_(self.region_sizes.unsqueeze(-2)).div(-float(self.img_size)).add_(1).clamp_(min = 0, max = 1)
             color_affinity = torch.min(self.color_hist.unsqueeze(-2), self.color_hist.unsqueeze(-3)).sum(dim = -1)
             texture_affinity = torch.min(self.texture_hist.unsqueeze(-2), self.texture_hist.unsqueeze(-3)).sum(dim = -1)
             return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
