@@ -212,13 +212,14 @@ def area_per_segment(reg_lab_int64 : 'BHW', max_num_segments : int, dtype = torc
 
 class SelectiveSearch(torch.nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
-    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', postprocess_labels = None, color_hist_bins = 8 * 4, texture_hist_bins = 8):
+    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', postprocess_labels = None, color_hist_bins = 8 * 4, texture_hist_bins = 8, remove_duplicate_boxes = False):
         super().__init__()
         self.base_k = base_k
         self.inc_k = inc_k
         self.sigma = sigma
         self.min_size = min_size
         self.preset = preset
+        self.remove_duplicate_boxes = remove_duplicate_boxes
         self.color_hist_bins = color_hist_bins
         self.texture_hist_bins = texture_hist_bins
         self.postprocess_labels = postprocess_labels if postprocess_labels is not None else (lambda reg_lab: reg_lab)
@@ -317,7 +318,7 @@ class SelectiveSearch(torch.nn.Module):
         plane_idx *= max_num_segments
         graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((plane_idx + r1).tolist(), (plane_idx + r2).tolist()), key = lambda t: t[0])}
         
-        regs = [dict(plane_id = (b, c, g, t), id = r1, plane_idx = plane_idx, level = 0 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(region_features.xywh_[plane_idx * max_num_segments + r1]), strategy = strategy, ids = {r1}, parent_id = -1) for plane_idx, (b, c, g, t, strategy) in enumerate((b, c, g, t, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for t, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
+        regs = [dict(strategy = strategy, plane_id = (b, c, g, t), plane_idx = plane_idx, id = r1, ids = {r1}, idx = r1, parent_idx = -1, level = 0 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(region_features.xywh_[plane_idx * max_num_segments + r1])) for plane_idx, (b, c, g, t, strategy) in enumerate((b, c, g, t, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for t, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
         region_features.merge_regions_counter, region_features.merge_regions_time = 0, 0.0
         region_features.compute_region_affinity_counter, region_features.compute_region_affinity_time = 0, 0.00
@@ -328,13 +329,13 @@ class SelectiveSearch(torch.nn.Module):
                 continue
             
             reg_fro, reg_to = regs[u], regs[v]
-            regs.append(dict(reg_fro, level = 1 + max(reg_fro['level'], reg_to['level']), ids = reg_fro['ids'] | reg_to['ids'], id = min(reg_fro['id'], reg_to['id'])))
-            reg_fro['parent_id'] = reg_to['parent_id'] = len(regs) - 1
+            regs.append( dict(strategy = reg_fro['strategy'], plane_id = reg_fro['plane_id'], plane_idx = reg_fro['plane_idx'], id = min(reg_fro['id'], reg_to['id']), ids = reg_fro['ids'] | reg_to['ids'], idx = len(regs), parent_idx = -1, level = 1 + max(reg_fro['level'], reg_to['level']) ) )
+            reg_fro['parent_idx'] = reg_to['parent_idx'] = len(regs) - 1
             tic = time.time()
             regs[-1]['bbox_xywh'] = region_features.merge_regions_(reg_fro['id'], reg_to['id'], reg_fro['plane_idx'])
             region_features.merge_regions_time += time.time() - tic; region_features.merge_regions_counter += 1
 
-            for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_id'], region_features, regs, graph):
+            for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_idx'], region_features, regs, graph):
                 heapq.heappush(PQ, new_edge)
         
         for reg, randuniform01 in zip(regs, torch.rand(len(regs), generator = generator).tolist()):
@@ -344,11 +345,16 @@ class SelectiveSearch(torch.nn.Module):
         print('sim reg', region_features.compute_region_affinity_counter, region_features.compute_region_affinity_time)
 
         key_img_id, key_rank = (lambda reg: reg['plane_id'][0]), (lambda reg: reg['rank'])
-        by_image = {k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 0], key = key_img_id), key = key_img_id)}
-        boxes_xywh_without_duplicates = [{reg['bbox_xywh'] : i for i, reg in enumerate(by_image.get(b, []))} for b in range(len(img))]
+        regions_by_image = list(map({k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 0], key = key_img_id), key = key_img_id)}.get, range(len(img))))
         
-        boxes_xywh = [torch.tensor(list(boxes_xywh_without_duplicates[b].keys()), dtype = torch.int16) for b in range(len(img))]
-        regions = [[by_image[b][i] for i in boxes_xywh_without_duplicates[b].values()] for b in range(len(img))]
+
+        if self.remove_duplicate_boxes:
+            boxes_xywh_without_duplicates = [{reg['bbox_xywh'] : i for i, reg in enumerate(by_image[b]) } for b in range(len(img))]
+            boxes_xywh = [torch.tensor(list(boxes_xywh_without_duplicates[b].keys()), dtype = torch.int16) for b in range(len(img))]
+            regions = [[by_image[b][i] for i in boxes_xywh_without_duplicates[b].values()] for b in range(len(img))]
+        else:
+            boxes_xywh = [torch.tensor([reg['bbox_xywh'] for reg in regs], dtype = torch.int16) for regs in regions_by_image]
+            regions = regions_by_image
 
         return boxes_xywh, regions, reg_lab
     

@@ -42,8 +42,9 @@ class MergedRegionsForestDataset(torch.utils.data.Dataset):
                             sim[i, j] = sim[j, i] = sum([rk['level'] - ri['level'], rk['level'] - rj['level'] ]) / 2.0
                             break
 
-        sim.diagonal().zero_()
-        sim = (1 - sim / sim.amax()).masked_fill_(sim < 0, 0.0)
+        breakpoint()
+        sim = (1 - sim / sim.amax()).masked_fill_(sim < 0, 0.0).clamp_(min = 0.05)
+        sim.diagonal().fill_(1)
         return sim
 
 class HypHCVisualEmbedding(nn.Embedding):
@@ -62,6 +63,7 @@ class HypHCVisualEmbedding(nn.Embedding):
 
     def loss(self, emb_pred : 'B3D', sim_gt : 'B3 # [s12, s13, s23]', temperature: float = 0.01):
         e1, e2, e3 = emb_pred.unbind(-2)
+        breakpoint()
         d_12 = hyplcapoincare.hyp_lca(e1, e2, return_coord=False)
         d_13 = hyplcapoincare.hyp_lca(e1, e3, return_coord=False)
         d_23 = hyplcapoincare.hyp_lca(e2, e3, return_coord=False)
@@ -82,10 +84,10 @@ def main(args):
     regions = regions[0]
 
     dataset = MergedRegionsForestDataset(regions)
+    data_loader = torch.utils.data.DataLoader(dataset, batch_size = args.batch_size, num_workers = args.num_workers, shuffle = True, pin_memory = True)
+    
     model = HypHCVisualEmbedding(dataset.sim_graph.shape[0], args.embedding_dim)
     optimizer = hypadam.RiemannianAdam(model.parameters(), lr = args.lr)
-
-    data_loader = torch.utils.data.DataLoader(dataset, batch_size = args.batch_size, shuffle = True, num_workers = args.num_workers, pin_memory = True)
 
     for step, (triple_ids, sim_gt) in enumerate(data_loader):
         inp_ids, sim_gt = triple_ids.to(args.device), sim_gt.to(args.device)
@@ -93,8 +95,10 @@ def main(args):
         loss = model.loss(emb_pred, sim_gt)
         optimizer.zero_grad()
         loss.backward()
-        print(step, loss)
         optimizer.step()
+        if step % 100 == 0:
+            breakpoint()
+            print(step, '/', len(data_loader), float(loss), float(model.scale))
 
     
 if __name__ == '__main__':

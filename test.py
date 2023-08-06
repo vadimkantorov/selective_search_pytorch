@@ -30,6 +30,7 @@ parser.add_argument('--input-path', '-i', default = 'astronaut.jpg')
 parser.add_argument('--output-path', '-o', default = 'test.png')
 parser.add_argument('--debugexit', action = 'store_true') 
 parser.add_argument('--profile', action = 'store_true') 
+parser.add_argument('--remove-duplicate-boxes', action = 'store_true') 
 parser.add_argument('--topk', type = int, default = 64)
 parser.add_argument('--preset', choices = ['fast', 'quality', 'single'], default = 'fast')
 parser.add_argument('--algo', choices = ['pytorch', 'opencv', 'opencv_custom'], default = 'pytorch')
@@ -52,7 +53,7 @@ print(args.input_path, img_rgbhwc_255.shape)
 tic = toc = 0.0
 
 if args.algo in ['pytorch', 'opencv_custom']:
-    algo = selectivesearchsegmentation.SelectiveSearch(preset = args.preset, compile = args.compile) if args.algo == 'pytorch' else selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = args.preset, lib_path = args.selectivesearchsegmentation_opencv_custom_so)
+    algo = selectivesearchsegmentation.SelectiveSearch(preset = args.preset, remove_duplicate_boxes = args.remove_duplicate_boxes) if args.algo == 'pytorch' else selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = args.preset, lib_path = args.selectivesearchsegmentation_opencv_custom_so)
     tic = time.time()
     if args.profile:
         with torch.profiler.profile(activities = [torch.profiler.ProfilerActivity.CPU], record_shapes = True) as prof:
@@ -98,6 +99,23 @@ l2r = level2regions(plane_id = args.plane_id)
 if args.debugexit:
     print('debugexit = True, quitting')
     sys.exit(0)
+
+if args.preset == 'single':
+    with open(args.output_path + '.dot', 'w') as dot:
+        dot.write('digraph {\n\n')
+        for reg in regs:
+            dot.write('{idx} -> {parent_idx} ;\n'.format(**reg))
+            if reg['level'] == 0:
+                dot.write('{idx} [style=filled, fillcolor=lightblue] ;\n'.format(**reg))
+            if reg['parent_idx'] == -1:
+                dot.write('{parent_idx} [style=filled, fillcolor=red] ;\n'.format(**reg))
+
+            dot.write('{idx} [label=<{idx}<br/>[{level}]>] ;\n'.format(**reg))
+        dot.write('\n}\n')
+        print(args.output_path + '.dot')
+        print(f'# dot -Tpng "{args.output_path}.dot" > "{args.output_path}.dot.png"')
+else:
+    print(f'treeviz is possible only with preset [single], but running with [{args.preset}]. skipping treeviz')
 
 fig = plt.figure(figsize = (args.grid, args.grid))
 plt.subplot(args.grid, args.grid, 1)
