@@ -12,7 +12,7 @@ import hypadam
 
 class MergedRegionsForestDataset(torch.utils.data.Dataset):
     def __init__(self, regions):
-        self.similarities = self.build_graph(regions)
+        self.sim_graph = self.build_graph(regions)
         self.triples = self.generate_triples()
 
     def __len__(self):
@@ -20,29 +20,30 @@ class MergedRegionsForestDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         triple = self.triples[idx]
-        s12 = self.similarities[triple[0], triple[1]]
-        s13 = self.similarities[triple[0], triple[2]]
-        s23 = self.similarities[triple[1], triple[2]]
-        similarities = torch.tensor([s12, s13, s23])
-        return triple, similarities
+        s12 = self.sim_graph[triple[0], triple[1]]
+        s13 = self.sim_graph[triple[0], triple[2]]
+        s23 = self.sim_graph[triple[1], triple[2]]
+        sim_graph = torch.tensor([s12, s13, s23])
+        return triple, sim_graph
     
     def generate_triples(self):
-        I = torch.arange(self.similarities.shape[0])
+        I = torch.arange(self.sim_graph.shape[0])
         return torch.stack(torch.meshgrid(I, I, I, indexing = 'ij'), dim = -1).flatten(end_dim = -2)
 
     @staticmethod
-    def build_graph(regions, neginf = -50):
-        sim = torch.full((len(regions), len(regions)), fill_value = neginf, dtype = torch.float32)
+    def build_graph(regions):
+        sim = -torch.ones((len(regions), len(regions)), dtype = torch.float32)
         
         for i, ri in enumerate(regions):
             for j, rj in enumerate(regions):
                 if i < j and ri['level'] == rj['level'] == 0:
                     for k, rk in enumerate(regions):
                         if ri['id'] in rk['ids'] and rj['id'] in rk['ids']:
-                            sim[i, j] = -rk['level']
+                            sim[i, j] = sim[j, i] = sum([rk['level'] - ri['level'], rk['level'] - rj['level'] ]) / 2.0
                             break
 
-        sim.diagonal().fill_(0.0)
+        sim.diagonal().zero_()
+        sim = (1 - sim / sim.amax()).masked_fill_(sim < 0, 0.0)
         return sim
 
 class HypHCVisualEmbedding(nn.Embedding):
@@ -81,7 +82,7 @@ def main(args):
     regions = regions[0]
 
     dataset = MergedRegionsForestDataset(regions)
-    model = HypHCVisualEmbedding(len(dataset), args.embedding_dim)
+    model = HypHCVisualEmbedding(dataset.sim_graph.shape[0], args.embedding_dim)
     optimizer = hypadam.RiemannianAdam(model.parameters(), lr = args.lr)
 
     data_loader = torch.utils.data.DataLoader(dataset, batch_size = args.batch_size, shuffle = True, num_workers = args.num_workers, pin_memory = True)
