@@ -3,6 +3,8 @@ import time
 import random
 import itertools
 import argparse
+import subprocess
+
 import matplotlib.animation, matplotlib.pyplot as plt
 
 import torch
@@ -12,13 +14,11 @@ try:
 except Exception as e:
     print(e)
     cv2 = None
-
 try:
     import selectivesearchsegmentation
 except Exception as e:
     print(e)
     selectivesearchsegmentation = None
-
 try:
     from opencv_custom import selectivesearchsegmentation_opencv_custom
 except Exception as e:
@@ -112,8 +112,14 @@ if args.preset == 'single':
 
             dot.write('{idx} [label=<{idx}<br/>[{level}]>] ;\n'.format(**reg))
         dot.write('\n}\n')
-        print(args.output_path + '.dot')
-        print(f'# dot -Tpng "{args.output_path}.dot" > "{args.output_path}.dot.png"')
+    
+    print(args.output_path + '.dot')
+    dot_cmd = ['dot', '-Tpng', args.output_path + '.dot', '-o', args.output_path + '.dot.png']
+    try:
+        print(' '.join(dot_cmd), '#', subprocess.check_call(dot_cmd))
+    except Exception as e:
+        print(' '.join(dot_cmd), '# dot cmd failed', e)
+    print(args.output_path + '.dot.png')
 else:
     print(f'treeviz is possible only with preset [single], but running with [{args.preset}]. skipping treeviz')
 
