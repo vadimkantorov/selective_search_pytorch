@@ -212,14 +212,13 @@ def area_per_segment(reg_lab_int64 : 'BHW', max_num_segments : int, dtype = torc
 
 class SelectiveSearch(torch.nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
-    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', postprocess_labels = None, compile = False, color_hist_bins = 8 * 4, texture_hist_bins = 8):
+    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', postprocess_labels = None, color_hist_bins = 8 * 4, texture_hist_bins = 8):
         super().__init__()
         self.base_k = base_k
         self.inc_k = inc_k
         self.sigma = sigma
         self.min_size = min_size
         self.preset = preset
-        self.compile = compile
         self.color_hist_bins = color_hist_bins
         self.texture_hist_bins = texture_hist_bins
         self.postprocess_labels = postprocess_labels if postprocess_labels is not None else (lambda reg_lab: reg_lab)
@@ -273,7 +272,7 @@ class SelectiveSearch(torch.nn.Module):
         # BxCx3xHxW in [0.0, 1.0]
         imgs = self.images(img, hsv, lab, gray)
         
-        # BxCxGxRxHxW (R = #rotations)
+        # BxCx3xRxHxW (R = #rotations)
         grads = normalize_min_max_(image_gaussian_grads(imgs.flatten(end_dim = -4)).unflatten(0, imgs.shape[:-3]), dim = (-2, -1))
         print('image feat', time.time() - tic); tic = time.time()
 
