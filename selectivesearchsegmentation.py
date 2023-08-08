@@ -251,7 +251,7 @@ class SelectiveSearch(torch.nn.Module):
 
     @staticmethod
     def get_region_mask(reg_lab, regs):
-        return torch.stack([(reg_lab[reg['plane_id'][:-1]][..., None] == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
+        return torch.stack([(reg_lab[reg['plane_id']].unsuqeeze(-1) == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
 
     def forward(self, img : 'B3HW', generator = None):
         img = torch.as_tensor(img).contiguous()
@@ -318,7 +318,7 @@ class SelectiveSearch(torch.nn.Module):
         plane_idx *= max_num_segments
         graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((plane_idx + r1).tolist(), (plane_idx + r2).tolist()), key = lambda t: t[0])}
         
-        regs = [dict(strategy = strategy, plane_id = (b, c, g, t), plane_idx = plane_idx, id = r1, ids = {r1}, idx = r1, parent_idx = -1, level = 0 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(region_features.xywh_[plane_idx * max_num_segments + r1])) for plane_idx, (b, c, g, t, strategy) in enumerate((b, c, g, t, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for t, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
+        regs = [dict(strategy = strategy, plane_id = (b, c, g), strategy_id = t, plane_idx = plane_idx, id = r1, ids = {r1}, idx = r1, parent_idx = -1, level = 0 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(region_features.xywh_[plane_idx * max_num_segments + r1])) for plane_idx, (b, c, g, t, strategy) in enumerate((b, c, g, t, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for t, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
         region_features.merge_regions_counter, region_features.merge_regions_time = 0, 0.0
         region_features.compute_region_affinity_counter, region_features.compute_region_affinity_time = 0, 0.00

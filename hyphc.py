@@ -42,7 +42,6 @@ class MergedRegionsForestDataset(torch.utils.data.Dataset):
                             sim[i, j] = sim[j, i] = sum([rk['level'] - ri['level'], rk['level'] - rj['level'] ]) / 2.0
                             break
 
-        breakpoint()
         sim = (1 - sim / sim.amax()).masked_fill_(sim < 0, 0.0).clamp_(min = 0.05)
         sim.diagonal().fill_(1)
         return sim
@@ -63,7 +62,6 @@ class HypHCVisualEmbedding(nn.Embedding):
 
     def loss(self, emb_pred : 'B3D', sim_gt : 'B3 # [s12, s13, s23]', temperature: float = 0.01):
         e1, e2, e3 = emb_pred.unbind(-2)
-        breakpoint()
         d_12 = hyplcapoincare.hyp_lca(e1, e2, return_coord=False)
         d_13 = hyplcapoincare.hyp_lca(e1, e3, return_coord=False)
         d_23 = hyplcapoincare.hyp_lca(e2, e3, return_coord=False)
@@ -97,7 +95,6 @@ def main(args):
         loss.backward()
         optimizer.step()
         if step % 100 == 0:
-            breakpoint()
             print(step, '/', len(data_loader), float(loss), float(model.scale))
 
     
@@ -114,3 +111,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     main(parser.parse_args())
+
+# TODO: 
+# - idea is to be able to retrieve pixels by selecting other pixels within a hyperbolic ball
+# - need to be use the intermediate tree nodes somehow?
+# - is tree distance a good metric to embed leaves?
