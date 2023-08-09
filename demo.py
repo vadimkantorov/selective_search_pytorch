@@ -176,12 +176,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--selectivesearchsegmentation_opencv_custom_so', default = 'opencv_custom/selectivesearchsegmentation_opencv_custom_.so')
     parser.add_argument('--gradio', action = 'store_true') 
-    parser.add_argument('--input-path', '-i', default = './examples/astronaut.jpg')
-    parser.add_argument('--output-dir', '-o', default = './out')
     parser.add_argument('--dot', action = 'store_true')
     parser.add_argument('--png', action = 'store_true')
     parser.add_argument('--gif', action = 'store_true')
     
+    parser.add_argument('--input-path', '-i', default = './examples/astronaut.jpg')
+    parser.add_argument('--output-dir', '-o', default = './out')
     parser.add_argument('--preset', choices = ['fast', 'quality', 'single'], default = 'fast')
     parser.add_argument('--algo', choices = ['pytorch', 'opencv', 'opencv_custom'], default = 'pytorch')
     parser.add_argument('--beginboxind', type = int, default = 0)
@@ -199,7 +199,7 @@ if __name__ == '__main__':
         # importing gradio on top, makes the program hang after finish
         import gradio
         gradio_inputs = [
-            gradio.Image(args.input_path),
+            gradio.Image(label = 'input image', value = args.input_path),
             gradio.Radio(label = 'preset', choices = ['fast', 'quality', 'single'], value = 'fast'),
             gradio.Radio(label = 'algo', choices = ['pytorch', 'opencv', 'opencv_custom'], value = 'pytorch'),
             gradio.Checkbox(label = 'remove duplicate boxes'),
@@ -214,7 +214,7 @@ if __name__ == '__main__':
             gradio.Textbox(label = 'log')
         ]
         gradio_submit = lambda img_rgbhwc_255, preset, algo, remove_duplicate_boxes, profile, beginboxind, endboxind, grid, seed: main(img_rgbhwc_255, **dict(vars(args), preset = preset, algo = algo, remove_duplicate_boxes = remove_duplicate_boxes, profile = profile, beginboxind = beginboxind, endboxind = endboxind, seed = seed, grid = grid))
-        gradio_demo = gradio.Interface(gradio_submit, inputs = gradio_inputs, outputs = gradio_outputs)
+        gradio_demo = gradio.Interface(gradio_submit, inputs = gradio_inputs, outputs = gradio_outputs, flagging_dir = args.output_dir, allow_flagging = False)
         gradio_demo.launch()
     else:
         img_rgbhwc_255 = plt.imread(args.input_path).copy()
