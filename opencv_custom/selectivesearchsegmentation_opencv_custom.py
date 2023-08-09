@@ -14,7 +14,8 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
             ctypes.c_void_p, ctypes.c_void_p,
             ctypes.c_void_p,
             ctypes.c_void_p, ctypes.c_int,
-            ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_float
+            ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_float,
+            ctypes.c_int64
         ]
         self.bind.process.restype = ctypes.c_int
         self.bind_num_rects = ctypes.c_int()
@@ -33,9 +34,10 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
     def get_region_mask(reg_lab, regs):
         return torch.stack([(reg_lab[tuple(reg['plane_id'][:-1])][..., None] == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
 
-    def forward(self, img):
+    def forward(self, img, generator = None):
         assert img.is_floating_point() and img.ndim == 4 and img.shape[-3] == 3
         height, width = img.shape[-2:]
+        seed = -1 if generator is None else generator.initial_seed()
         
         img_bgrchw_255 = img.movedim(-3, -1).mul(255).to(torch.uint8).flip(-1).contiguous()
         img_rgbhwc_1 = img.movedim(-3, -1).contiguous()
@@ -59,7 +61,8 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
                 seg[k].data_ptr(), ctypes.addressof(self.bind_num_seg),
                 reg[k].data_ptr(),
                 bit[k].data_ptr(), bit.shape[-1],
-                self.preset.encode(), self.base_k, self.inc_k, self.sigma
+                self.preset.encode(), self.base_k, self.inc_k, self.sigma,
+                seed
             )
             print('self.bind.process', time.time() - tic)
             

@@ -253,7 +253,7 @@ class SelectiveSearch(torch.nn.Module):
     def get_region_mask(reg_lab, regs):
         return torch.stack([(reg_lab[reg['plane_id'][:-1]].unsqueeze(-1) == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
 
-    def forward(self, img : 'B3HW', generator = None):
+    def forward(self, img : 'B3HW', generator = None, print = print):
         img = torch.as_tensor(img).contiguous()
         assert img.is_floating_point() and img.ndim == 4 and img.shape[-3] == 3
 

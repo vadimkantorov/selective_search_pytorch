@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <cassert>
@@ -22,9 +23,13 @@ extern "C" int process(
     int32_t* seg_ptr, int32_t* seg_channels, 
     int32_t* reg_ptr, 
     uint8_t* bit_ptr, int32_t bit_cols,
-    const char* strategy, int32_t base_k, int32_t inc_k, float sigma
+    const char* strategy, int32_t base_k, int32_t inc_k, float sigma,
+    int64_t seed
 )
 {
+    if(seed >= 0)
+        srand((unsigned int32_t) seed);
+
     cv::ximgproc::segmentation::SelectiveSearchSegmentationImpl algo;
     algo.setBaseImage(cv::Mat(img_rows, img_cols, CV_8UC3, img_ptr));
     

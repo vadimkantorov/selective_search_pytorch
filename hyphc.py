@@ -12,7 +12,10 @@ import hypadam
 
 class MergedRegionsForestDataset(torch.utils.data.Dataset):
     def __init__(self, regions):
-        self.sim_graph = self.build_graph(regions)
+        dist = self.calc_tree_dist(regions)
+        self.sim_graph = (1 - dist / dist.amax()).clamp_(min = 0.01)
+        self.sim_graph.diagonal().fill_(1)
+        
         self.triples = self.generate_triples()
 
     def __len__(self):
@@ -29,6 +32,25 @@ class MergedRegionsForestDataset(torch.utils.data.Dataset):
     def generate_triples(self):
         I = torch.arange(self.sim_graph.shape[0])
         return torch.stack(torch.meshgrid(I, I, I, indexing = 'ij'), dim = -1).flatten(end_dim = -2)
+
+    @staticmethod
+    def calc_tree_dist(regions):
+        u = torch.tensor([reg['idx'] for reg in regions], dtype = torch.int64)
+        v = torch.tensor([reg['parent_idx'] for reg in regions], dtype = torch.int64)
+        # TODO: fixup tree root
+        
+        adj = torch.zeros((len(regions), len(regions)), dtype = torch.bool)
+        adj[u, v] = True
+        adj[v, u] = True
+
+        dist = torch.full_like(adj, float('inf'), dtype = torch.float32).masked_fill_(adj, 1.0)
+        dist.diagonal().fill_(0)
+
+        for k in range(dist.shape[-1]):
+            dist = torch.min(dist, dist[:, k, None] + dist[None, k, :])
+
+        # assert dist.isfinite().all()
+        return dist
 
     @staticmethod
     def build_graph(regions):
