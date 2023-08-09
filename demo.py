@@ -176,7 +176,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--selectivesearchsegmentation_opencv_custom_so', default = 'opencv_custom/selectivesearchsegmentation_opencv_custom_.so')
     parser.add_argument('--gradio', action = 'store_true') 
-    parser.add_argument('--input-path', '-i', default = 'examples/astronaut.jpg')
+    parser.add_argument('--input-path', '-i', default = './examples/astronaut.jpg')
     parser.add_argument('--output-dir', '-o', default = './out')
     parser.add_argument('--dot', action = 'store_true')
     parser.add_argument('--png', action = 'store_true')
@@ -199,21 +199,21 @@ if __name__ == '__main__':
         # importing gradio on top, makes the program hang after finish
         import gradio
         gradio_inputs = [
-            gradio.Image(),
+            gradio.Image(args.input_path),
             gradio.Radio(label = 'preset', choices = ['fast', 'quality', 'single'], value = 'fast'),
             gradio.Radio(label = 'algo', choices = ['pytorch', 'opencv', 'opencv_custom'], value = 'pytorch'),
             gradio.Checkbox(label = 'remove duplicate boxes'),
             gradio.Checkbox(label = 'profile'),
             gradio.Number(label = 'beginboxind', minimum = 0, precision = 0, value = 0),
             gradio.Number(label = 'endboxind', minimum = 0, precision = 0, value = 64),
-            gradio.Number(label = 'seed', minimum = 0, precision = 0, value = 42),
             gradio.Number(label = 'grid', minimum = 0, precision = 0, value = 4),
+            gradio.Number(label = 'seed', minimum = 0, precision = 0, value = 42),
         ]
         gradio_outputs = [
             gradio.Image(),
             gradio.Textbox(label = 'log')
         ]
-        gradio_submit = lambda img_rgbhwc_255, preset, algo, remove_duplicate_boxes, profile, beginboxind, endboxind, seed, grid: main(img_rgbhwc_255, **dict(vars(args), preset = preset, algo = algo, remove_duplicate_boxes = remove_duplicate_boxes, profile = profile, beginboxind = beginboxind, endboxind = endboxind, seed = seed, grid = grid))
+        gradio_submit = lambda img_rgbhwc_255, preset, algo, remove_duplicate_boxes, profile, beginboxind, endboxind, grid, seed: main(img_rgbhwc_255, **dict(vars(args), preset = preset, algo = algo, remove_duplicate_boxes = remove_duplicate_boxes, profile = profile, beginboxind = beginboxind, endboxind = endboxind, seed = seed, grid = grid))
         gradio_demo = gradio.Interface(gradio_submit, inputs = gradio_inputs, outputs = gradio_outputs)
         gradio_demo.launch()
     else:
