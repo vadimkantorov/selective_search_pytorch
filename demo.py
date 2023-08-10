@@ -27,9 +27,9 @@ except Exception as e:
     print(e)
     selectivesearchsegmentation_opencv_custom = None
 
-def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_duplicate_boxes, profile, seed, grid, dot, png, gif, beginboxind, endboxind, selectivesearchsegmentation_opencv_custom_so):
+def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_duplicate_boxes, profile, seed, grid, beginboxind, endboxind, selectivesearchsegmentation_opencv_custom_so, vis_instance_grids, vis_merging_segments, vis_merging_trees):
 
-    class print(metaclass = type('', (type,), dict(__repr__ = lambda self: print.log))):
+    class print(metaclass = type('', (type, ), dict(__repr__ = lambda self: print.log))):
         log = ''
         def __init__(self, *args, **kwargs):
             print.log += str(args) + '\n'
@@ -78,19 +78,21 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
     print('processing time', toc - tic)
 
     os.makedirs(output_dir, exist_ok = True)
-    if png:
-        plot_instance_grid(output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab)
-    if dot:
-        plot_merging_trees(output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab)
-    if gif:
-        plot_merging_segments(output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab)
-    return img_rgbhwc_255, repr(print)
+    
+    vis_instance_grids = plot_instance_grids(img_rgbhwc_255, os.path.basename(input_path), output_dir, grid, beginboxind, endboxind, plane_ids, algo, boxes_xywh, regions, reg_lab) if vis_instance_grids else []
 
-def plot_instance_grid(output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab):
+    vis_merging_segments = plot_merging_segments(os.path.basename(input_path), output_dir, grid, plane_ids, algo, boxes_xywh, regions, reg_lab) if vis_merging_segments else []
+    
+    vis_merging_trees = plot_merging_trees(os.path.basename(input_path), output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab) if vis_merging_trees else []
+
+    return repr(print), vis_instance_grids, vis_merging_segments, vis_merging_trees
+
+def plot_instance_grids(img_rgbhwc_255, basename, output_dir, grid, beginboxind, endboxind, plane_ids, algo, boxes_xywh, regions, reg_lab):
+    res = []
     for plane_id in plane_ids:
         regs = [reg for reg in sum(regions, []) if reg['plane_id'] == plane_id]
         suffix = ''.join(map(str, plane_id))
-        output_path = os.path.join(output_dir, 'png_' + os.path.basename(input_path) + f'.{suffix}.png')
+        output_path = os.path.join(output_dir, 'png_' + basename + f'.{suffix}.png')
 
         fig = plt.figure(figsize = (grid, grid))
         plt.subplot(grid, grid, 1)
@@ -103,7 +105,7 @@ def plot_instance_grid(output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab
             plt.subplot(grid, grid, 2 + k)
             mask = algo.get_region_mask(reg_lab, [reg] )[0]
             
-            plt.imshow((img_rgbhwc_255 * mask[..., None] + img_rgbhwc_255 * mask[..., None].logical_not() // 10).to(torch.uint8), aspect = 'auto')
+            plt.imshow((torch.as_tensor(img_rgbhwc_255) * mask[..., None] + torch.as_tensor(img_rgbhwc_255) * mask[..., None].logical_not() // 10).to(torch.uint8), aspect = 'auto')
             plt.gca().add_patch(matplotlib.patches.Rectangle(reg['bbox_xywh'][:2], *reg['bbox_xywh'][2:], linewidth = 1, edgecolor = 'r', facecolor = 'none'))
             plt.axis('off')
 
@@ -112,12 +114,16 @@ def plot_instance_grid(output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab
         plt.close(fig)
         print(output_path)
 
+        res.append((output_path, suffix)) 
+    return res
 
-def plot_merging_trees(output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab):
+
+def plot_merging_trees(basename, output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab):
+    res = []
     for plane_id in plane_ids:
         regs = [reg for reg in sum(regions, []) if reg['plane_id'] == plane_id]
         suffix = ''.join(map(str, plane_id))
-        output_path = os.path.join(output_dir, 'dot_' + os.path.basename(input_path) + f'.{suffix}.dot')
+        output_path = os.path.join(output_dir, 'dot_' + basename + f'.{suffix}.dot')
         
         with open(output_path, 'w') as dot:
             dot.write('digraph {\n\n')
@@ -130,18 +136,24 @@ def plot_merging_trees(output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab
                 dot.write('{idx} [label=<{idx}<br/>[{level}]>] ;\n'.format(**reg))
             dot.write('\n}\n')
         print(output_path)
-        dot_cmd = ['dot', '-Tpng', output_path, '-o', output_path + '.png']
+        dot_cmd = ['dot', '-Tpng', output_path, '-o']
+        output_path += '.png'
+        dot_cmd.append(output_path)
         try:
             print(' '.join(dot_cmd), '#', subprocess.check_call(dot_cmd))
+            res.append((output_path, suffix))
+            print(output_path)
         except Exception as e:
             print(' '.join(dot_cmd), '# dot cmd failed', e)
-        print(output_path + '.png', end = '\n\n')
 
-def plot_merging_segments(output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab):
+    return res
+
+def plot_merging_segments(basename, output_dir, grid, plane_ids, algo, boxes_xywh, regions, reg_lab):
+    res = []
     for plane_id in plane_ids:
         regs = [reg for reg in sum(regions, []) if reg['plane_id'] == plane_id]
         suffix = ''.join(map(str, plane_id))
-        output_path = os.path.join(output_dir, 'gif_' + os.path.basename(input_path) + f'.{suffix}.gif')
+        output_path = os.path.join(output_dir, 'gif_' + basename + f'.{suffix}.gif')
         
         key_level = lambda reg: reg['level']
         level2regions = {k : list(g) for k, g in itertools.groupby(sorted(regs, key = key_level), key = key_level)}
@@ -172,14 +184,16 @@ def plot_merging_segments(output_dir, plane_ids, algo, boxes_xywh, regions, reg_
         plt.close(fig)
         print(output_path)
 
+        res.append((output_path, suffix))
+    return res
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--selectivesearchsegmentation_opencv_custom_so', default = 'opencv_custom/selectivesearchsegmentation_opencv_custom_.so')
-    parser.add_argument('--gradio', action = 'store_true') 
-    parser.add_argument('--dot', action = 'store_true')
-    parser.add_argument('--png', action = 'store_true')
-    parser.add_argument('--gif', action = 'store_true')
-    
+    parser.add_argument('--gradio', action = 'store_true')
+    parser.add_argument('--vis-instance-grids', action = 'store_true')
+    parser.add_argument('--vis-merging-segments', action = 'store_true')
+    parser.add_argument('--vis-merging-trees', action = 'store_true')
     parser.add_argument('--input-path', '-i', default = './examples/astronaut.jpg')
     parser.add_argument('--output-dir', '-o', default = './out')
     parser.add_argument('--preset', choices = ['fast', 'quality', 'single'], default = 'fast')
@@ -202,6 +216,7 @@ if __name__ == '__main__':
             gradio.Image(label = 'input image', value = args.input_path),
             gradio.Radio(label = 'preset', choices = ['fast', 'quality', 'single'], value = 'fast'),
             gradio.Radio(label = 'algo', choices = ['pytorch', 'opencv', 'opencv_custom'], value = 'pytorch'),
+            gradio.CheckboxGroup(label = 'visualizations', choices = ['instance grids', 'merging segments', 'merging trees'], value = ['instance grids', 'merging segments', 'merging trees']),
             gradio.Checkbox(label = 'remove duplicate boxes'),
             gradio.Checkbox(label = 'profile'),
             gradio.Number(label = 'beginboxind', minimum = 0, precision = 0, value = 0),
@@ -210,12 +225,15 @@ if __name__ == '__main__':
             gradio.Number(label = 'seed', minimum = 0, precision = 0, value = 42),
         ]
         gradio_outputs = [
-            gradio.Image(),
-            gradio.Textbox(label = 'log')
+            gradio.Textbox(label = 'log'),
+            #gradio.Image(),
+            gradio.Gallery(label = 'instance grids'),
+            gradio.Gallery(label = 'merging segments'),
+            gradio.Gallery(label = 'merging trees')
         ]
-        gradio_submit = lambda img_rgbhwc_255, preset, algo, remove_duplicate_boxes, profile, beginboxind, endboxind, grid, seed: main(img_rgbhwc_255, **dict(vars(args), preset = preset, algo = algo, remove_duplicate_boxes = remove_duplicate_boxes, profile = profile, beginboxind = beginboxind, endboxind = endboxind, seed = seed, grid = grid))
-        gradio_demo = gradio.Interface(gradio_submit, inputs = gradio_inputs, outputs = gradio_outputs, flagging_dir = args.output_dir, allow_flagging = False)
+        gradio_submit = lambda img_rgbhwc_255, preset, algo, visualizations, remove_duplicate_boxes, profile, beginboxind, endboxind, grid, seed: main(img_rgbhwc_255, **dict(vars(args), preset = preset, algo = algo, remove_duplicate_boxes = remove_duplicate_boxes, profile = profile, beginboxind = beginboxind, endboxind = endboxind, seed = seed, grid = grid, vis_instance_grids = 'instance grids' in visualizations, vis_merging_segments = 'merging segments' in visualizations, vis_merging_trees = 'merging trees' in visualizations))
+        gradio_demo = gradio.Interface(gradio_submit, inputs = gradio_inputs, outputs = gradio_outputs, flagging_dir = args.output_dir, allow_flagging = 'never')
         gradio_demo.launch()
     else:
-        img_rgbhwc_255 = plt.imread(args.input_path).copy()
+        img_rgbhwc_255 = plt.imread(args.input_path)
         main(img_rgbhwc_255 = img_rgbhwc_255, **vars(args))
