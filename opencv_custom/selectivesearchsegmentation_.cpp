@@ -70,6 +70,8 @@ namespace cv {
 
                     int image_id;
                     bool used;
+                    
+                    int idx;
                     Mat bit;
             };
 
@@ -1005,8 +1007,9 @@ namespace cv {
                     r.level = 1;
                     r.merged_to = -1;
                     r.bounding_box = bounding_rects[i];
-                    r.bit = Mat::zeros(1, MAX_NUM_BIT_BYTES, CV_8UC1);
                     
+                    r.idx = i;
+                    r.bit = Mat::zeros(1, MAX_NUM_BIT_BYTES, CV_8UC1);
                     int byte_idx = i / 8;
                     uint8_t bit_set = uint8_t(1) << (7 - (i % 8));
                     assert(byte_idx < MAX_NUM_BIT_BYTES);
@@ -1045,6 +1048,8 @@ namespace cv {
                     new_r.level = std::max(region_from.level, region_to.level) + 1;
                     new_r.merged_to = -1;
                     new_r.bounding_box = region_from.bounding_box | region_to.bounding_box;
+                    
+                    new_r.idx = (int)regions.size() - 1;
                     cv::bitwise_or(region_from.bit, region_to.bit, new_r.bit);
 
                     regions.push_back(new_r);

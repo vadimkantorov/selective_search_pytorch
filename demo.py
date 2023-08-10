@@ -35,14 +35,16 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
             print.log += str(args) + '\n'
             __builtins__.print(*args, **kwargs)
 
-    print('height x width x 3:', img_rgbhwc_255.shape, 'dtype = ', img_rgbhwc_255.dtype)
-    img_rgb1chw_1 = torch.as_tensor(img_rgbhwc_255).movedim(-1, -3).unsqueeze(0) / 255.0
-
     tic = toc = 0.0
+
+    print('height x width x 3:', img_rgbhwc_255.shape, 'dtype = ', img_rgbhwc_255.dtype)
+    if algo == 'opencv_custom' and remove_duplicate_boxes:
+        return '[remove duplicate boxes] is not supported for [opencv_custom]', [], [], []
 
     if algo in ['pytorch', 'opencv_custom']:
         algo = selectivesearchsegmentation.SelectiveSearch(preset = preset, remove_duplicate_boxes = remove_duplicate_boxes) if algo == 'pytorch' else selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = preset, lib_path = selectivesearchsegmentation_opencv_custom_so)
         generator = torch.Generator().manual_seed(seed)
+        img_rgb1chw_1 = torch.as_tensor(img_rgbhwc_255).movedim(-1, -3).div(255).unsqueeze(0)
         tic = time.time()
         if profile:
             with torch.profiler.profile(activities = [torch.profiler.ProfilerActivity.CPU], record_shapes = True) as prof:
@@ -75,7 +77,7 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
     print('boxes:', sum(map(len, boxes_xywh)))
     print('height x width: {0}x{1}'.format(*img_rgbhwc_255.shape[:2]))
     print('ymax:', max(y + h - 1 for xywh in boxes_xywh for x, y, w, h in xywh.tolist()), 'xmax:', max(x + w - 1 for xywh in boxes_xywh for x, y, w, h in xywh.tolist()))
-    print('processing time', toc - tic)
+    print('processing time', toc - tic); tic = time.time()
 
     os.makedirs(output_dir, exist_ok = True)
     
@@ -84,6 +86,8 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
     vis_merging_segments = plot_merging_segments(os.path.basename(input_path), output_dir, grid, plane_ids, algo, boxes_xywh, regions, reg_lab) if vis_merging_segments else []
     
     vis_merging_trees = plot_merging_trees(os.path.basename(input_path), output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab) if vis_merging_trees else []
+
+    print('vis time', time.time() - tic, end = '\n\n')
 
     return repr(print), vis_instance_grids, vis_merging_segments, vis_merging_trees
 
@@ -189,7 +193,7 @@ def plot_merging_segments(basename, output_dir, grid, plane_ids, algo, boxes_xyw
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--selectivesearchsegmentation_opencv_custom_so', default = 'opencv_custom/selectivesearchsegmentation_opencv_custom_.so')
+    parser.add_argument('--selectivesearchsegmentation_opencv_custom_so', default = 'opencv_custom/selectivesearchsegmentation_opencv_custom_.so', help = 'NumPy will print warning "UserWarning: The value of the smallest subnormal for <class numpy.float64 type is zero" becasue the .so is built with -Ofast which setz FTZ flush-to-zero CPU flag, details at https://moyix.blogspot.com/2022/09/someones-been-messing-with-my-subnormals.html')
     parser.add_argument('--gradio', action = 'store_true')
     parser.add_argument('--vis-instance-grids', action = 'store_true')
     parser.add_argument('--vis-merging-segments', action = 'store_true')
@@ -235,5 +239,5 @@ if __name__ == '__main__':
         gradio_demo = gradio.Interface(gradio_submit, inputs = gradio_inputs, outputs = gradio_outputs, flagging_dir = args.output_dir, allow_flagging = 'never')
         gradio_demo.launch()
     else:
-        img_rgbhwc_255 = plt.imread(args.input_path)
+        img_rgbhwc_255 = plt.imread(args.input_path).copy()
         main(img_rgbhwc_255 = img_rgbhwc_255, **vars(args))

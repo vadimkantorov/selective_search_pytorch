@@ -32,9 +32,9 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
 
     @staticmethod
     def get_region_mask(reg_lab, regs):
-        return torch.stack([(reg_lab[tuple(reg['plane_id'][:-1])][..., None] == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
+        return torch.stack([(reg_lab[tuple(reg['plane_id'][:-1])].unsqueeze(-1) == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
 
-    def forward(self, img, generator = None):
+    def forward(self, img, generator = None, print = print):
         assert img.is_floating_point() and img.ndim == 4 and img.shape[-3] == 3
         height, width = img.shape[-2:]
         seed = -1 if generator is None else generator.initial_seed()
@@ -43,7 +43,7 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
         img_rgbhwc_1 = img.movedim(-3, -1).contiguous()
 
         rects = torch.zeros( (img.shape[0], self.max_num_rects, 4), dtype = torch.int32)
-        reg   = torch.zeros( (img.shape[0], self.max_num_rects, 3), dtype = torch.int32)
+        reg   = torch.zeros( (img.shape[0], self.max_num_rects, 5), dtype = torch.int32)
         bit   = torch.zeros( (img.shape[0], self.max_num_rects, self.max_num_bit), dtype = torch.uint8)
         seg   = torch.zeros( (img.shape[0], self.max_num_seg, height, width), dtype = torch.int32)
         
@@ -67,7 +67,7 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
             print('self.bind.process', time.time() - tic)
             
             boxes_xywh.append(rects[k, :self.bind_num_rects.value])
-            regions.append([ dict(plane_id = (k, region_image_id, 0, -1), ids = self.bit_nonzero(b), level = region_level, id = region_id) for (region_id, region_level, region_image_id), b in zip(reg[k, :self.bind_num_rects.value].tolist(), bit[k, :self.bind_num_rects.value].tolist()) ])
+            regions.append([ dict(plane_id = (k, region_image_id, 0, -1), ids = self.bit_nonzero(b), level = region_level, id = region_id, idx = region_idx, parent_idx = region_merged_to, bbox_xywh = tuple(bbox_xywh)) for (region_id, region_level, region_image_id, region_idx, region_merged_to), bbox_xywh, b in zip( reg[k, :self.bind_num_rects.value].tolist(), rects[k, :self.bind_num_rects.value].tolist(), bit[k, :self.bind_num_rects.value].tolist() ) ])
             reg_lab.append(seg[k, :self.bind_num_seg.value])
 
         return boxes_xywh, regions, torch.stack(reg_lab).unsqueeze(-3)

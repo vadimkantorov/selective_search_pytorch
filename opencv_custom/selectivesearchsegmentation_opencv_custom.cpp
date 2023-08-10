@@ -83,9 +83,11 @@ extern "C" int process(
         cv::ximgproc::segmentation::Region& region = algo.all_regions[c];
         if(region.used)
         {
-            reg_ptr[3 * k + 0] = region.id;
-            reg_ptr[3 * k + 1] = region.level;
-            reg_ptr[3 * k + 2] = region.image_id;
+            reg_ptr[5 * k + 0] = region.id;
+            reg_ptr[5 * k + 1] = region.level;
+            reg_ptr[5 * k + 2] = region.image_id;
+            reg_ptr[5 * k + 3] = region.idx;
+            reg_ptr[5 * k + 4] = region.merged_to;
             memcpy(bit_ptr + k * bit_cols, &region.bit.data[0], region.bit.cols);
             k++;
         }
