@@ -4,17 +4,15 @@ Modified OpenCV `cv::ximgproc::segmentation` code that doesn't require installin
 # working sequence to install opencv and torchvision is at https://github.com/pytorch/vision/issues/4665#issuecomment-947545121
 
 # conda install -c conda-forge opencv
+# sudo apt-get install libopencv-dev
 
 # can try
 make selectivesearchsegmentation_opencv_custom_.so 
 
-# or specify the paths
-## to discover the include/opencv4 dir
+# or specify the paths to discover the include/opencv4 dir and the dir that has libopencv_core.so
 # g++ -m64 -xc++ --verbose -E - < /dev/null 2>&1 | grep '^ .*include.*' | xargs find | grep 'opencv2/core.hpp'
-## to discover the dir that has libopencv_core.so
 # g++ -m64 -Xlinker --verbose -lopencv_core -lopencv_imgproc 2>&1 | grep '.*opencv.* succeeded'
-
-make selectivesearchsegmentation_opencv_custom_.so OPENCVINCLUDEDIR=/path/to/lib/dir/that/contains/libopencv_core.so OPENCVLIBDIR=/path/to/include/dir/that/is/named/opencv4
+# make selectivesearchsegmentation_opencv_custom_.so OPENCVINCLUDEDIR=/path/to/lib/dir/that/contains/libopencv_core.so OPENCVLIBDIR=/path/to/include/dir/that/is/named/opencv4
 ``` 
 
 ```shell
