@@ -38,23 +38,24 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
     tic = toc = 0.0
 
     print('height x width x 3:', img_rgbhwc_255.shape, 'dtype = ', img_rgbhwc_255.dtype)
-    if algo == 'opencv_custom' and remove_duplicate_boxes:
-        return '[remove duplicate boxes] is not supported for [opencv_custom]', [], [], []
 
     if algo in ['pytorch', 'opencv_custom']:
         algo = selectivesearchsegmentation.SelectiveSearch(preset = preset, remove_duplicate_boxes = remove_duplicate_boxes) if algo == 'pytorch' else selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = preset, lib_path = selectivesearchsegmentation_opencv_custom_so)
         generator = torch.Generator().manual_seed(seed)
         img_rgb1chw_1 = torch.as_tensor(img_rgbhwc_255).movedim(-1, -3).div(255).unsqueeze(0)
+        
         tic = time.time()
+        prof = torch.profiler.profile(activities = [torch.profiler.ProfilerActivity.CPU], record_shapes = True)
         if profile:
-            with torch.profiler.profile(activities = [torch.profiler.ProfilerActivity.CPU], record_shapes = True) as prof:
-                boxes_xywh, regions, reg_lab = algo(img_rgb1chw_1, generator = generator, print = print)
+            prof.__enter__()
+        
+        boxes_xywh, regions, reg_lab = algo(img_rgb1chw_1, generator = generator, print = print)
+        plane_ids = sorted(set(reg['plane_id'] for reg in sum(regions, [])))
+        
+        if profile:
+            prof.__exit__()
             print(prof.key_averages().table(sort_by = 'cpu_time_total', row_limit = 10))
-        else:
-            boxes_xywh, regions, reg_lab = algo(img_rgb1chw_1, generator = generator, print = print)
         toc = time.time()
-
-        plane_ids = set(reg['plane_id'] for reg in sum(regions, []))
 
     else:
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
@@ -62,17 +63,17 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
         dict(fast = algo.switchToSelectiveSearchFast, quality = algo.switchToSelectiveSearchQuality, single = algo.switchToSingleStrategy)[preset]()
         tic = time.time()
         boxes_xywh = [algo.process()]
-        toc = time.time()
-        regions = None
+        regions = [ [dict(plane_id = (0,), idx = idx, bbox_xywh = bbox_xywh) for idx, bbox_xywh in enumerate(boxes_xywh[0].tolist())] ]
         reg_lab = None
-        
-        level2regions = lambda plane_id: []
-        #type(algo).get_region_mask = lambda k: 0wi
-        def mask(k):
-            x, y, w, h = boxes_xywh[k]
-            res = torch.zeros(img_rgbhwc_255.shape[:-1])
-            res[y : y + h, x : x + w] = 1
-            return res
+        plane_ids = [(0,)]
+        toc = time.time()
+        def get_region_mask(self, reg_lab, regs):
+            mask = torch.zeros(len(regs), *img_rgbhwc_255.shape[:-1], dtype = torch.bool)
+            for k, reg in enumerate(regs):
+                x, y, w, h = regions[reg['plane_id'][0]][reg['idx']]['bbox_xywh']
+                mask[k, y : y + h, x : x + w] = 1
+            return mask
+        type(algo).get_region_mask = lambda self, reg_lab, regs: get_region_mask(self, reg_lab, regs)
 
     print('boxes:', sum(map(len, boxes_xywh)))
     print('height x width: {0}x{1}'.format(*img_rgbhwc_255.shape[:2]))
@@ -81,7 +82,7 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
 
     os.makedirs(output_dir, exist_ok = True)
     
-    vis_instance_grids = plot_instance_grids(img_rgbhwc_255, os.path.basename(input_path), output_dir, grid, beginboxind, endboxind, plane_ids, algo, boxes_xywh, regions, reg_lab) if vis_instance_grids else []
+    vis_instance_grids = plot_instance_grids(os.path.basename(input_path), output_dir, grid, img_rgbhwc_255, beginboxind, endboxind, plane_ids if vis_instance_grids else [], algo, boxes_xywh, regions, reg_lab) if vis_instance_grids in [True, None] else []
 
     vis_merging_segments = plot_merging_segments(os.path.basename(input_path), output_dir, grid, plane_ids, algo, boxes_xywh, regions, reg_lab) if vis_merging_segments else []
     
@@ -89,12 +90,12 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
 
     print('vis time', time.time() - tic, end = '\n\n')
 
-    return repr(print), vis_instance_grids, vis_merging_segments, vis_merging_trees
+    return repr(print), (vis_instance_grids[0][0] if vis_instance_grids else None), vis_instance_grids[1:], vis_merging_segments, vis_merging_trees
 
-def plot_instance_grids(img_rgbhwc_255, basename, output_dir, grid, beginboxind, endboxind, plane_ids, algo, boxes_xywh, regions, reg_lab):
+def plot_instance_grids(basename, output_dir, grid, img_rgbhwc_255, beginboxind, endboxind, plane_ids, algo, boxes_xywh, regions, reg_lab):
     res = []
-    for plane_id in plane_ids:
-        regs = [reg for reg in sum(regions, []) if reg['plane_id'] == plane_id]
+    for plane_id in ['all'] + plane_ids:
+        regs = [reg for reg in sum(regions, []) if reg['plane_id'] == plane_id or plane_id == 'all']
         suffix = ''.join(map(str, plane_id))
         output_path = os.path.join(output_dir, 'png_' + basename + f'.{suffix}.png')
 
@@ -220,7 +221,7 @@ if __name__ == '__main__':
             gradio.Image(label = 'input image', value = args.input_path),
             gradio.Radio(label = 'preset', choices = ['fast', 'quality', 'single'], value = 'fast'),
             gradio.Radio(label = 'algo', choices = ['pytorch', 'opencv', 'opencv_custom'], value = 'pytorch'),
-            gradio.CheckboxGroup(label = 'visualizations', choices = ['instance grids', 'merging segments', 'merging trees'], value = ['instance grids', 'merging segments', 'merging trees']),
+            gradio.CheckboxGroup(label = 'visualizations', choices = ['instance grids', 'merging segments', 'merging trees']),
             gradio.Checkbox(label = 'remove duplicate boxes'),
             gradio.Checkbox(label = 'profile'),
             gradio.Number(label = 'beginboxind', minimum = 0, precision = 0, value = 0),
@@ -230,14 +231,17 @@ if __name__ == '__main__':
         ]
         gradio_outputs = [
             gradio.Textbox(label = 'log'),
-            #gradio.Image(),
+            gradio.Image(label = 'top boxes'),
             gradio.Gallery(label = 'instance grids'),
             gradio.Gallery(label = 'merging segments'),
             gradio.Gallery(label = 'merging trees')
         ]
-        gradio_submit = lambda img_rgbhwc_255, preset, algo, visualizations, remove_duplicate_boxes, profile, beginboxind, endboxind, grid, seed: main(img_rgbhwc_255, **dict(vars(args), preset = preset, algo = algo, remove_duplicate_boxes = remove_duplicate_boxes, profile = profile, beginboxind = beginboxind, endboxind = endboxind, seed = seed, grid = grid, vis_instance_grids = 'instance grids' in visualizations, vis_merging_segments = 'merging segments' in visualizations, vis_merging_trees = 'merging trees' in visualizations))
+        gradio_submit = lambda img_rgbhwc_255, preset, algo, visualizations, remove_duplicate_boxes, profile, beginboxind, endboxind, grid, seed: main(img_rgbhwc_255, **dict(vars(args), preset = preset, algo = algo, remove_duplicate_boxes = remove_duplicate_boxes, profile = profile, beginboxind = beginboxind, endboxind = endboxind, seed = seed, grid = grid, vis_instance_grids = True if 'instance grids' in visualizations else None, vis_merging_segments = algo != 'opencv' and 'merging segments' in visualizations, vis_merging_trees = algo != 'opencv' and 'merging trees' in visualizations))
         gradio_demo = gradio.Interface(gradio_submit, inputs = gradio_inputs, outputs = gradio_outputs, flagging_dir = args.output_dir, allow_flagging = 'never')
         gradio_demo.launch()
     else:
         img_rgbhwc_255 = plt.imread(args.input_path).copy()
+        if args.algo == 'opencv':
+            print('disabling [vis_merging_segments] and [vis_merging_trees] for [opencv]')
+            args.vis_merging_segments = args.vis_merging_trees = False
         main(img_rgbhwc_255 = img_rgbhwc_255, **vars(args))
