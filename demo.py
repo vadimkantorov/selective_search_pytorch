@@ -107,9 +107,8 @@ def plot_instance_grids(basename, output_dir, grid, img_rgbhwc_255, beginboxind,
             plt.gca().add_patch(matplotlib.patches.Rectangle(reg['bbox_xywh'][:2], *reg['bbox_xywh'][2:], linewidth = 1, edgecolor = 'r', facecolor = 'none'))
 
         for k, reg in enumerate(regs[:grid * grid - 1]):
-            plt.subplot(grid, grid, 2 + k)
             mask = algo.get_region_mask(reg_lab, [reg] )[0]
-            
+            plt.subplot(grid, grid, 2 + k)
             plt.imshow((torch.as_tensor(img_rgbhwc_255) * mask[..., None] + torch.as_tensor(img_rgbhwc_255) * mask[..., None].logical_not() // 10).to(torch.uint8), aspect = 'auto')
             plt.gca().add_patch(matplotlib.patches.Rectangle(reg['bbox_xywh'][:2], *reg['bbox_xywh'][2:], linewidth = 1, edgecolor = 'r', facecolor = 'none'))
             plt.axis('off')
