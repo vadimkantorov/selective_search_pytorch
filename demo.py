@@ -50,30 +50,30 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
             prof.__enter__()
         
         boxes_xywh, regions, reg_lab = algo(img_rgb1chw_1, generator = generator, print = print)
-        plane_ids = sorted(set(reg['plane_id'] for reg in sum(regions, [])))
         
         if profile:
             prof.__exit__(None, None, None)
             print(prof.key_averages().table(sort_by = 'cpu_time_total', row_limit = 50))
         toc = time.time()
+        plane_ids = sorted(set(reg['plane_id'] for reg in sum(regions, [])))
 
     else:
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
         algo.setBaseImage(img_rgbhwc_255[::-1].copy())
         dict(fast = algo.switchToSelectiveSearchFast, quality = algo.switchToSelectiveSearchQuality, single = algo.switchToSingleStrategy)[preset]()
         tic = time.time()
-        boxes_xywh = [algo.process()]
+        boxes_xywh = [torch.as_tensor(algo.process())]
         regions = [ [dict(plane_id = (0,), idx = idx, bbox_xywh = bbox_xywh) for idx, bbox_xywh in enumerate(boxes_xywh[0].tolist())] ]
         reg_lab = None
-        plane_ids = [(0,)]
         toc = time.time()
         def get_region_mask(self, reg_lab, regs):
             mask = torch.zeros(len(regs), *img_rgbhwc_255.shape[:-1], dtype = torch.bool)
             for k, reg in enumerate(regs):
                 x, y, w, h = regions[reg['plane_id'][0]][reg['idx']]['bbox_xywh']
-                mask[k, y : y + h, x : x + w] = 1
+                mask[k, y : y + h, x : x + w] = True
             return mask
         type(algo).get_region_mask = lambda self, reg_lab, regs: get_region_mask(self, reg_lab, regs)
+        plane_ids = [(0,)]
 
     print('boxes:', sum(map(len, boxes_xywh)))
     print('height x width: {0}x{1}'.format(*img_rgbhwc_255.shape[:2]))
