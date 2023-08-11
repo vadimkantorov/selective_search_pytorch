@@ -171,6 +171,7 @@ def plot_merging_segments(basename, output_dir, grid, plane_ids, algo, boxes_xyw
                 for reg_id in reg['ids']:
                     segm[segm == reg_id] = min_id
             
+            #TODO: use more contrastive and random palette
             img = segm / max_num_segments
 
             if not im:
