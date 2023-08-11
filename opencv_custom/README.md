@@ -31,44 +31,49 @@ wget https://raw.githubusercontent.com/opencv/opencv_contrib/71f9dbd144c0e32b877
 diff selectivesearchsegmentation.cpp selectivesearchsegmentation_.cpp
 45a46,47
 > #define MAX_NUM_BIT_BYTES 64
->
-67a70,73
->
+> 
+67a70,75
+> 
 >                     int image_id;
 >                     bool used;
+>                     
+>                     int idx;
 >                     Mat bit;
-734a741,744
->
+734a743,746
+>                     
 >                 public:
 >                     std::vector<Region> all_regions;
 >                     std::vector<Mat> all_img_regions;
-888,889c898,899
-<
+888,889c900,901
+< 
 <                 std::vector<Region> all_regions;
 ---
 >                 all_regions.clear();
 >                 all_img_regions.clear();
-901a912
+901a914
 >                         all_img_regions.push_back(img_regions);
-951a963
+951a965
 >                                 region->image_id = image_id;
-961c973
-<
+961c975
+< 
 ---
->
-967a980
+>                 
+967a982
 >                     region->used = false;
-968a982
+968a984
 >                         region->used = true;
-973d986
-<
-994a1008,1013
+973d988
+< 
+994a1010,1016
+>                     
+>                     r.idx = i;
 >                     r.bit = Mat::zeros(1, MAX_NUM_BIT_BYTES, CV_8UC1);
->
->                     int bit_idx = i / 8;
->                     uint32_t bit_set = uint8_t(1) << (7 - (i % 8));
->                     assert(bit_idx < MAX_NUM_BIT_BYTES);
->                     r.bit.data[bit_idx] |= bit_set;
-1028a1048
+>                     int byte_idx = i / 8;
+>                     uint8_t bit_set = uint8_t(1) << (7 - (i % 8));
+>                     assert(byte_idx < MAX_NUM_BIT_BYTES);
+>                     r.bit.data[byte_idx] |= bit_set;
+1028a1051,1053
+>                     
+>                     new_r.idx = (int)regions.size() - 1;
 >                     cv::bitwise_or(region_from.bit, region_to.bit, new_r.bit);
 ```
