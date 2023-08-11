@@ -92,12 +92,12 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
 
     return repr(print), (vis_instance_grids[0][0] if vis_instance_grids else None), vis_instance_grids[1:], vis_merging_segments, vis_merging_trees
 
-def plot_instance_grids(basename, output_dir, grid, img_rgbhwc_255, beginboxind, endboxind, plane_ids, algo, boxes_xywh, regions, reg_lab):
+def plot_instance_grids(basename, output_dir, grid, img_rgbhwc_255, beginboxind, endboxind, plane_ids, algo, boxes_xywh, regions, reg_lab, ext = 'png'):
     res = []
     for plane_id in ['all'] + plane_ids:
         regs = [reg for reg in sum(regions, []) if reg['plane_id'] == plane_id or plane_id == 'all']
         suffix = ''.join(map(str, plane_id))
-        output_path = os.path.join(output_dir, 'png_' + basename + f'.{suffix}.png')
+        output_path = os.path.join(output_dir, f'{ext}_{basename}.{suffix}.{ext}')
 
         fig = plt.figure(figsize = (grid, grid))
         plt.subplot(grid, grid, 1)
@@ -117,17 +117,16 @@ def plot_instance_grids(basename, output_dir, grid, img_rgbhwc_255, beginboxind,
         plt.savefig(output_path)
         plt.close(fig)
         print(output_path)
-
         res.append((output_path, suffix)) 
     return res
 
 
-def plot_merging_trees(basename, output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab):
+def plot_merging_trees(basename, output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab, ext = 'dot'):
     res = []
     for plane_id in plane_ids:
         regs = [reg for reg in sum(regions, []) if reg['plane_id'] == plane_id]
         suffix = ''.join(map(str, plane_id))
-        output_path = os.path.join(output_dir, 'dot_' + basename + f'.{suffix}.dot')
+        output_path = os.path.join(output_dir, f'{ext}_{basename}.{suffix}.{ext}')
         
         with open(output_path, 'w') as dot:
             dot.write('digraph {\n\n')
@@ -145,19 +144,18 @@ def plot_merging_trees(basename, output_dir, plane_ids, algo, boxes_xywh, region
         dot_cmd.append(output_path)
         try:
             print(' '.join(dot_cmd), '#', subprocess.check_call(dot_cmd))
-            res.append((output_path, suffix))
             print(output_path)
+            res.append((output_path, suffix))
         except Exception as e:
             print(' '.join(dot_cmd), '# dot cmd failed', e)
-
     return res
 
-def plot_merging_segments(basename, output_dir, grid, plane_ids, algo, boxes_xywh, regions, reg_lab):
+def plot_merging_segments(basename, output_dir, grid, plane_ids, algo, boxes_xywh, regions, reg_lab, ext = 'gif'):
     res = []
     for plane_id in plane_ids:
         regs = [reg for reg in sum(regions, []) if reg['plane_id'] == plane_id]
         suffix = ''.join(map(str, plane_id))
-        output_path = os.path.join(output_dir, 'gif_' + basename + f'.{suffix}.gif')
+        output_path = os.path.join(output_dir, f'{ext}_{basename}.{suffix}.{ext}')
         
         key_level = lambda reg: reg['level']
         level2regions = {k : list(g) for k, g in itertools.groupby(sorted(regs, key = key_level), key = key_level)}
@@ -187,7 +185,6 @@ def plot_merging_segments(basename, output_dir, grid, plane_ids, algo, boxes_xyw
         matplotlib.animation.FuncAnimation(fig, update, frames = sorted(level2regions), interval = 1000).save(output_path, dpi = 80)
         plt.close(fig)
         print(output_path)
-
         res.append((output_path, suffix))
     return res
 
