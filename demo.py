@@ -53,8 +53,8 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
         plane_ids = sorted(set(reg['plane_id'] for reg in sum(regions, [])))
         
         if profile:
-            prof.__exit__()
-            print(prof.key_averages().table(sort_by = 'cpu_time_total', row_limit = 10))
+            prof.__exit__(None, None, None)
+            print(prof.key_averages().table(sort_by = 'cpu_time_total', row_limit = 50))
         toc = time.time()
 
     else:

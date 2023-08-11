@@ -181,10 +181,11 @@ def bbox_merge_tensor(xywh1 : torch.Tensor, xywh2 : torch.Tensor, dtype = None) 
     w, h = xymax.sub_(xymin).add_(1)
     return torch.mul(w, h, out = torch.tensor([], dtype = dtype))
 
-def bbox_merge(xywh1 : tuple, xywh2 : tuple) -> tuple:
+def bbox_merge(xywh1 : tuple, xywh2 : tuple, return_area = False):
     x1, y1 = min(xywh1[0], xywh2[0]), min(xywh1[1], xywh2[1])
     x2, y2 = max(xywh1[0] + xywh1[2] - 1, xywh2[0] + xywh2[2] - 1), max(xywh1[1] + xywh1[3] - 1, xywh2[1] + xywh2[3] - 1)
-    return (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
+    x, y, w, h = (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
+    return (w * h) if return_area else (x, y, w, h)
 
 def bbox_per_segment(reg_lab_int64 : 'BHW', max_num_segments : int, dtype = torch.int16):
     img_height, img_width = reg_lab_int64.shape[-2:]
@@ -429,21 +430,13 @@ class HandcraftedRegionFeatures:
             return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
     
         else:
-            clamp01 = lambda x: max(0, min(1, x))
-            bbox_size = lambda xywh: xywh[-2] * xywh[-1]
-            
             plane_idx *= self.max_num_segments
             
             res = 0.0
-
-            res += 0 if size  == 0 else size * clamp01(1 - (self.region_sizes_[plane_idx + r1] + self.region_sizes_[plane_idx + r2]) / self.img_size)
-            
-            res += 0 if fill  == 0 else fill * clamp01(1 - (bbox_size(bbox_merge(self.xywh_[plane_idx + r1], self.xywh_[plane_idx + r2])) - self.region_sizes_[plane_idx + r1] - self.region_sizes_[plane_idx + r2]) / self.img_size)
-            
+            res += 0 if size  == 0 else size * max(0, min(1, 1 - (self.region_sizes_[plane_idx + r1] + self.region_sizes_[plane_idx + r2]) / self.img_size))
+            res += 0 if fill  == 0 else fill * max(0, min(1, 1 - (bbox_merge(self.xywh_[plane_idx + r1], self.xywh_[plane_idx + r2], return_area = True) - self.region_sizes_[plane_idx + r1] - self.region_sizes_[plane_idx + r2]) / self.img_size))
             res += 0 if color == 0 else color * float(torch.min(self.color_hist_[plane_idx + r1], self.color_hist_[plane_idx + r2], out = self.color_hist_buffer).sum(dim = -1))
-            
-            res += 0 if color == 0 else texture * float(torch.min(self.texture_hist_[plane_idx + r1], self.texture_hist_[plane_idx + r2], out = self.texture_hist_buffer).sum(dim = -1))
-
+            res += 0 if texture == 0 else texture * float(torch.min(self.texture_hist_[plane_idx + r1], self.texture_hist_[plane_idx + r2], out = self.texture_hist_buffer).sum(dim = -1))
             return res
     
     def merge_regions_(self, r1, r2, plane_idx) -> tuple:
