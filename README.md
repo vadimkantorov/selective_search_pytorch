@@ -10,20 +10,21 @@ Most of implementation should be running fine on GPU, but it is not tested yet (
 
 ### Usage
 ```shell
-pip install opencv-python-headless opencv-contrib-python-headless # or without -headless
-
+# pip install opencv-python-headless opencv-contrib-python-headless # or without -headless
 # download github mirror of astronaut test image https://www.flickr.com/photos/nasacommons/16504233985/ small size: https://live.staticflickr.com/8674/16504233985_9f1060624e_w_d.jpg
-curl https://user-images.githubusercontent.com/1041752/127776719-f8abfd60-6640-48fb-8b70-a1b6f6ade5cf.jpg > astronaut.jpg
-curl https://user-images.githubusercontent.com/1041752/138138584-6d0a07d4-5980-4da3-aace-34afa32836a1.JPEG > n02869837_18068.JPEG
+#mkdir -p ./examples/ && curl https://user-images.githubusercontent.com/1041752/127776719-f8abfd60-6640-48fb-8b70-a1b6f6ade5cf.jpg > ./examples/astronaut.jpg
+#mkdir -p ./examples/ && curl https://user-images.githubusercontent.com/1041752/138138584-6d0a07d4-5980-4da3-aace-34afa32836a1.JPEG > ./examples/n02869837_18068.JPEG
 
-python3 test.py -i astronaut.jpg -o test.png
+python3 demo.py --gradio
+
+python3 demo.py -i ./examples/astronaut.jpg -o ./out/
 # open test.png and test.png.gif
 
-python3 test.py -i astronaut.jpg -o test.png --algo opencv
+python3 demo.py -i ./examples/astronaut.jpg -o ./out/ --algo opencv
 # open test.png
 
 # pushd opencv_custom && make OPENCVLIBDIR=/path/to/opencv/lib/dir OPENCVINCLUDEDIR=/path/to/opencv/include/dir/opencv4 && popd
-python3 test.py -i astronaut.jpg -o test.png --algo opencv_custom
+python3 demo.py -i ./examples/astronaut.jpg -o ./out/ --algo opencv_custom
 # open test.png and test.png.gif
 ```
 ### astronaut.jpg

@@ -5,7 +5,7 @@ import torch
 import time
 
 class SelectiveSearchOpenCVCustom(torch.nn.Module):
-    def __init__(self, preset = 'fast', lib_path = 'selectivesearchsegmentation_opencv_custom_.so', max_num_rects = 4096, max_num_seg = 16, max_num_bit = 64, base_k = 0, inc_k = 0, sigma = 0):
+    def __init__(self, preset = 'fast', remove_duplicate_boxes = False, lib_path = 'selectivesearchsegmentation_opencv_custom_.so', max_num_rects = 4096, max_num_seg = 16, max_num_bit = 64, base_k = 0, inc_k = 0, sigma = 0):
         super().__init__()
         self.bind = ctypes.CDLL(lib_path)
         self.bind.process.argtypes = [
@@ -15,12 +15,13 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
             ctypes.c_void_p,
             ctypes.c_void_p, ctypes.c_int,
             ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_float,
-            ctypes.c_int64
+            ctypes.c_bool, ctypes.c_int64
         ]
         self.bind.process.restype = ctypes.c_int
         self.bind_num_rects = ctypes.c_int()
         self.bind_num_seg = ctypes.c_int()
         self.preset = preset
+        self.remove_duplicate_boxes = remove_duplicate_boxes
         self.base_k = base_k
         self.inc_k = inc_k
         self.sigma = sigma
@@ -62,12 +63,12 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
                 reg[k].data_ptr(),
                 bit[k].data_ptr(), bit.shape[-1],
                 self.preset.encode(), self.base_k, self.inc_k, self.sigma,
-                seed
+                self.remove_duplicate_boxes, seed
             )
             print('self.bind.process', time.time() - tic)
             
             boxes_xywh.append(rects[k, :self.bind_num_rects.value])
-            regions.append([ dict(plane_id = (k, region_image_id, 0, -1), ids = self.bit_nonzero(b), level = region_level, id = region_id, idx = region_idx, parent_idx = region_merged_to, bbox_xywh = tuple(bbox_xywh)) for (region_id, region_level, region_image_id, region_idx, region_merged_to), bbox_xywh, b in zip( reg[k, :self.bind_num_rects.value].tolist(), rects[k, :self.bind_num_rects.value].tolist(), bit[k, :self.bind_num_rects.value].tolist() ) ])
+            regions.append([ dict(plane_id = (k, region_image_id, 0, 0), ids = self.bit_nonzero(b), level = region_level, id = region_id, idx = region_idx, parent_idx = region_merged_to, bbox_xywh = tuple(bbox_xywh)) for (region_id, region_level, region_image_id, region_idx, region_merged_to), bbox_xywh, b in zip( reg[k, :self.bind_num_rects.value].tolist(), rects[k, :self.bind_num_rects.value].tolist(), bit[k, :self.bind_num_rects.value].tolist() ) ])
             reg_lab.append(seg[k, :self.bind_num_seg.value])
 
         return boxes_xywh, regions, torch.stack(reg_lab).unsqueeze(-3)

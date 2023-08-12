@@ -11,6 +11,7 @@ make selectivesearchsegmentation_opencv_custom_.so
 
 # or specify the paths to discover the include/opencv4 dir and the dir that has libopencv_core.so
 # g++ -m64 -xc++ --verbose -E - < /dev/null 2>&1 | grep '^ .*include.*' | xargs find | grep 'opencv2/core.hpp'
+# g++ -print-file-name=libopencv_core.so
 # g++ -m64 -Xlinker --verbose -lopencv_core -lopencv_imgproc 2>&1 | grep '.*opencv.* succeeded'
 # make selectivesearchsegmentation_opencv_custom_.so OPENCVINCLUDEDIR=/path/to/lib/dir/that/contains/libopencv_core.so OPENCVLIBDIR=/path/to/include/dir/that/is/named/opencv4
 ``` 

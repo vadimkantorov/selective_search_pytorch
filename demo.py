@@ -5,7 +5,7 @@ import itertools
 import argparse
 import subprocess
 
-import matplotlib.animation, matplotlib.pyplot as plt
+import matplotlib, matplotlib.animation, matplotlib.pyplot as plt
 
 import torch
 
@@ -40,32 +40,37 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
     print('height x width x 3:', img_rgbhwc_255.shape, 'dtype = ', img_rgbhwc_255.dtype)
 
     if algo in ['pytorch', 'opencv_custom']:
-        algo = selectivesearchsegmentation.SelectiveSearch(preset = preset, remove_duplicate_boxes = remove_duplicate_boxes) if algo == 'pytorch' else selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = preset, lib_path = selectivesearchsegmentation_opencv_custom_so)
-        generator = torch.Generator().manual_seed(seed)
         img_rgb1chw_1 = torch.as_tensor(img_rgbhwc_255).movedim(-1, -3).div(255).unsqueeze(0)
         
-        tic = time.time()
+        algo = selectivesearchsegmentation.SelectiveSearch(preset = preset, remove_duplicate_boxes = remove_duplicate_boxes) if algo == 'pytorch' else selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = preset, remove_duplicate_boxes = remove_duplicate_boxes, lib_path = selectivesearchsegmentation_opencv_custom_so)
+        
         prof = torch.profiler.profile(activities = [torch.profiler.ProfilerActivity.CPU], record_shapes = True)
         if profile:
             prof.__enter__()
         
-        boxes_xywh, regions, reg_lab = algo(img_rgb1chw_1, generator = generator, print = print)
+        tic = time.time()
+        boxes_xywh, regions, reg_lab = algo(img_rgb1chw_1, generator = torch.Generator().manual_seed(seed), print = print)
+        toc = time.time()
         
         if profile:
             prof.__exit__(None, None, None)
             print(prof.key_averages().table(sort_by = 'cpu_time_total', row_limit = 50))
-        toc = time.time()
         plane_ids = sorted(set(reg['plane_id'] for reg in sum(regions, [])))
 
     else:
+        img_bgrhwc_255 = img_rgbhwc_255[::-1].copy()
+        
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
-        algo.setBaseImage(img_rgbhwc_255[::-1].copy())
+       
+        algo.setBaseImage(img_bgrhwc_255)
         dict(fast = algo.switchToSelectiveSearchFast, quality = algo.switchToSelectiveSearchQuality, single = algo.switchToSingleStrategy)[preset]()
+        
         tic = time.time()
         boxes_xywh = [torch.as_tensor(algo.process())]
-        regions = [ [dict(plane_id = (0,), idx = idx, bbox_xywh = bbox_xywh) for idx, bbox_xywh in enumerate(boxes_xywh[0].tolist())] ]
+        regions = [[dict(plane_id = (0,), idx = idx, bbox_xywh = bbox_xywh) for idx, bbox_xywh in enumerate(boxes_xywh[0].tolist())]]
         reg_lab = None
         toc = time.time()
+        
         def get_region_mask(self, reg_lab, regs):
             mask = torch.zeros(len(regs), *img_rgbhwc_255.shape[:-1], dtype = torch.bool)
             for k, reg in enumerate(regs):
@@ -80,12 +85,13 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
     print('ymax:', max(y + h - 1 for xywh in boxes_xywh for x, y, w, h in xywh.tolist()), 'xmax:', max(x + w - 1 for xywh in boxes_xywh for x, y, w, h in xywh.tolist()))
     print('processing time', toc - tic); tic = time.time()
 
-    os.makedirs(output_dir, exist_ok = True)
-    
+    print('plot_instance_grids')
     vis_instance_grids = plot_instance_grids(os.path.basename(input_path), output_dir, grid, img_rgbhwc_255, beginboxind, endboxind, plane_ids if vis_instance_grids else [], algo, boxes_xywh, regions, reg_lab) if vis_instance_grids in [True, None] else []
 
-    vis_merging_segments = plot_merging_segments(os.path.basename(input_path), output_dir, grid, plane_ids, algo, boxes_xywh, regions, reg_lab) if vis_merging_segments else []
+    print('plot_merging_segments')
+    vis_merging_segments = plot_merging_segments(os.path.basename(input_path), output_dir, grid, seed, plane_ids, algo, boxes_xywh, regions, reg_lab) if vis_merging_segments else []
     
+    print('plot_merging_trees')
     vis_merging_trees = plot_merging_trees(os.path.basename(input_path), output_dir, plane_ids, algo, boxes_xywh, regions, reg_lab) if vis_merging_trees else []
 
     print('vis time', time.time() - tic, end = '\n\n')
@@ -150,7 +156,7 @@ def plot_merging_trees(basename, output_dir, plane_ids, algo, boxes_xywh, region
             print(' '.join(dot_cmd), '# dot cmd failed', e)
     return res
 
-def plot_merging_segments(basename, output_dir, grid, plane_ids, algo, boxes_xywh, regions, reg_lab, ext = 'gif'):
+def plot_merging_segments(basename, output_dir, grid, seed, plane_ids, algo, boxes_xywh, regions, reg_lab, ext = 'gif'):
     res = []
     for plane_id in plane_ids:
         regs = [reg for reg in sum(regions, []) if reg['plane_id'] == plane_id]
@@ -164,15 +170,17 @@ def plot_merging_segments(basename, output_dir, grid, plane_ids, algo, boxes_xyw
         fig.set_tight_layout(True)
         def update(level, im = []):
             segm = reg_lab[plane_id[:-1]].clone()
-            max_num_segments = 1 + max(reg['id'] for reg in regs)
+            max_num_segments = 1 + int(segm.amax())
+
+            colormap = torch.as_tensor(matplotlib.colormaps['jet'].resampled(max_num_segments)(range(max_num_segments)))
+            colormap_shuffled = cmap[torch.randperm(max_num_segments, generator = torch.Generator().manual_seed(seed))]
             
             for reg in level2regions[level]:
                 min_id = min(reg['ids'])
                 for reg_id in reg['ids']:
                     segm[segm == reg_id] = min_id
             
-            #TODO: use more contrastive and random palette
-            img = segm / max_num_segments
+            img = colormap_shuffled[segm]
 
             if not im:
                 im.append(plt.imshow(img, animated = True, cmap = 'hsv', aspect = 'auto'))
@@ -197,7 +205,7 @@ if __name__ == '__main__':
     parser.add_argument('--vis-merging-segments', action = 'store_true')
     parser.add_argument('--vis-merging-trees', action = 'store_true')
     parser.add_argument('--input-path', '-i', default = './examples/astronaut.jpg')
-    parser.add_argument('--output-dir', '-o', default = './out')
+    parser.add_argument('--output-dir', '-o', default = './out/')
     parser.add_argument('--preset', choices = ['fast', 'quality', 'single'], default = 'fast')
     parser.add_argument('--algo', choices = ['pytorch', 'opencv', 'opencv_custom'], default = 'pytorch')
     parser.add_argument('--beginboxind', type = int, default = 0)
@@ -210,13 +218,16 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     print(args, end = '\n\n')
+    
+    os.makedirs(args.output_dir, exist_ok = True)
+    print(args.output_dir)
 
     if args.gradio:
         # importing gradio on top, makes the program hang after finish
         import gradio
         gradio_inputs = [
             gradio.Image(label = 'input image', value = args.input_path),
-            gradio.Radio(label = 'preset', choices = ['fast', 'quality', 'single'], value = 'fast'),
+            gradio.Radio(label = 'preset', choices = ['fast', 'quality', 'single'], value = 'single'),
             gradio.Radio(label = 'algo', choices = ['pytorch', 'opencv', 'opencv_custom'], value = 'pytorch'),
             gradio.CheckboxGroup(label = 'visualizations', choices = ['instance grids', 'merging segments', 'merging trees']),
             gradio.Checkbox(label = 'remove duplicate boxes'),
@@ -239,6 +250,7 @@ if __name__ == '__main__':
     else:
         img_rgbhwc_255 = plt.imread(args.input_path).copy()
         if args.algo == 'opencv':
-            print('disabling [vis_merging_segments] and [vis_merging_trees] for [opencv]')
+            print('[opencv]: enabling [remove_duplicate_boxes], disabling [vis_merging_segments] and [vis_merging_trees]')
+            args.remove_duplicate_boxes = True
             args.vis_merging_segments = args.vis_merging_trees = False
         main(img_rgbhwc_255 = img_rgbhwc_255, **vars(args))

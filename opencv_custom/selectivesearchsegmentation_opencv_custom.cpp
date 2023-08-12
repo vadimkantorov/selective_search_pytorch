@@ -24,7 +24,7 @@ extern "C" int process(
     int32_t* reg_ptr, 
     uint8_t* bit_ptr, int32_t bit_cols,
     const char* strategy, int32_t base_k, int32_t inc_k, float sigma,
-    int64_t seed
+    bool remove_duplicate_boxes, int64_t seed
 )
 {
     if(seed >= 0)
@@ -81,7 +81,7 @@ extern "C" int process(
     for(size_t c = 0, k = 0; c < algo.all_regions.size(); c++)
     {
         cv::ximgproc::segmentation::Region& region = algo.all_regions[c];
-        if(region.used)
+        if( region.used || (remove_duplicate_boxes == false) )
         {
             reg_ptr[5 * k + 0] = region.id;
             reg_ptr[5 * k + 1] = region.level;
