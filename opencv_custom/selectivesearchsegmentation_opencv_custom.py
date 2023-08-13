@@ -51,7 +51,6 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
         boxes_xywh, regions, reg_lab = [], [], []
 
         for k, i in enumerate(img_bgrchw_255):
-        #for k, i in enumerate(img_bgrchw_255):
             self.bind_num_rects.value = self.max_num_rects
             self.bind_num_seg.value = self.max_num_seg
             

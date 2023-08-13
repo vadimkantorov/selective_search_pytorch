@@ -58,18 +58,7 @@ extern "C" int process(
     std::vector<cv::Rect> rects;
     algo.process(rects);
     
-    assert(*rect_rows >= rects.size());
-    for(size_t c = 0; c < rects.size(); c++)
-    {
-        cv::Rect& rect = rects[c];
-        rect_ptr[4 * c + 0] = rect.x;
-        rect_ptr[4 * c + 1] = rect.y;
-        rect_ptr[4 * c + 2] = rect.width;
-        rect_ptr[4 * c + 3] = rect.height;
-    }
-    *rect_rows = rects.size();
-    
-    assert(*seg_channels >= algo.all_img_regions.size());
+    assert(algo.all_img_regions.size() <= *seg_channels);
     for(size_t c = 0; c < algo.all_img_regions.size(); c++)
     {
         cv::Mat& img = algo.all_img_regions[c];
@@ -78,9 +67,12 @@ extern "C" int process(
     *seg_channels = algo.all_img_regions.size();
 
     assert(bit_cols >= MAX_NUM_BIT_BYTES);
-    for(size_t c = 0, k = 0; c < algo.all_regions.size(); c++)
+    assert((remove_duplicate_boxes ? rects.size() : algo.all_regions.size()) <= *rect_rows);
+    int k = 0;
+    for(size_t c = 0; c < algo.all_regions.size(); c++)
     {
         cv::ximgproc::segmentation::Region& region = algo.all_regions[c];
+        cv::Rect& rect = region.bounding_box;
         if( region.used || (remove_duplicate_boxes == false) )
         {
             reg_ptr[5 * k + 0] = region.id;
@@ -88,10 +80,15 @@ extern "C" int process(
             reg_ptr[5 * k + 2] = region.image_id;
             reg_ptr[5 * k + 3] = region.idx;
             reg_ptr[5 * k + 4] = region.merged_to;
+            rect_ptr[4 * k + 0] = rect.x;
+            rect_ptr[4 * k + 1] = rect.y;
+            rect_ptr[4 * k + 2] = rect.width;
+            rect_ptr[4 * k + 3] = rect.height;
             memcpy(bit_ptr + k * bit_cols, &region.bit.data[0], region.bit.cols);
             k++;
         }
     }
+    *rect_rows = k;
     
     return 0;
 }

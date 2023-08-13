@@ -73,6 +73,6 @@ diff selectivesearchsegmentation.cpp selectivesearchsegmentation_.cpp
 >                     r.bit.data[byte_idx] |= bit_set;
 1028a1051,1053
 >                     
->                     new_r.idx = (int)regions.size() - 1;
+>                     new_r.idx = (int)regions.size();
 >                     cv::bitwise_or(region_from.bit, region_to.bit, new_r.bit);
 ```

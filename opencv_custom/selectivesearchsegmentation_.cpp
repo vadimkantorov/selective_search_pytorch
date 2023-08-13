@@ -1049,7 +1049,7 @@ namespace cv {
                     new_r.merged_to = -1;
                     new_r.bounding_box = region_from.bounding_box | region_to.bounding_box;
                     
-                    new_r.idx = (int)regions.size() - 1;
+                    new_r.idx = (int)regions.size();
                     cv::bitwise_or(region_from.bit, region_to.bit, new_r.bit);
 
                     regions.push_back(new_r);

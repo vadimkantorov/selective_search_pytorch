@@ -68,7 +68,7 @@ def main(img_rgbhwc_255, gradio, input_path, output_dir, preset, algo, remove_du
         tic = time.time()
         boxes_xywh = [torch.as_tensor(algo.process())]
         regions = [[dict(plane_id = (0,), idx = idx, bbox_xywh = bbox_xywh) for idx, bbox_xywh in enumerate(boxes_xywh[0].tolist())]]
-        reg_lab = None
+        reg_lab = torch.zeros(1, *img_bgrhwc_255.shape[:2], dtype = torch.int32)
         toc = time.time()
         
         def get_region_mask(self, reg_lab, regs):
@@ -138,7 +138,7 @@ def plot_merging_trees(basename, output_dir, plane_ids, algo, boxes_xywh, region
             dot.write('digraph {\n\n')
             for reg in regs:
                 dot.write('{idx} -> {parent_idx} ;\n'.format(**reg))
-                if reg['level'] == 0:
+                if reg['level'] == 1:
                     dot.write('{idx} [style=filled, fillcolor=lightblue] ;\n'.format(**reg))
                 if reg['parent_idx'] == -1:
                     dot.write('{parent_idx} [style=filled, fillcolor=red] ;\n'.format(**reg))
