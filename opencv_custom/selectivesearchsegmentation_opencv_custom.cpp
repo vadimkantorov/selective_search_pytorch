@@ -68,6 +68,7 @@ extern "C" int process(
 
     assert(bit_cols >= MAX_NUM_BIT_BYTES);
     assert((remove_duplicate_boxes ? rects.size() : algo.all_regions.size()) <= *rect_rows);
+    printf("rects.size(): %zu algo.all_regions.size(): %zu, remove_duplicate_boxes: %d\n", rects.size(), algo.all_regions.size(), (int)remove_duplicate_boxes);
     int k = 0;
     for(size_t c = 0; c < algo.all_regions.size(); c++)
     {

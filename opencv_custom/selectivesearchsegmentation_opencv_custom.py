@@ -35,13 +35,10 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
     def get_region_mask(reg_lab, regs):
         return torch.stack([(reg_lab[tuple(reg['plane_id'][:-1])].unsqueeze(-1) == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
 
-    def forward(self, img, generator = None, print = print):
-        assert img.is_floating_point() and img.ndim == 4 and img.shape[-3] == 3
-        height, width = img.shape[-2:]
+    def forward(self, *, img_bgrbhw3_255 : 'BHW3', generator = None, print = print):
+        assert img_bgrbhw3_255.is_contiguous() and img_bgrhw3_255.dtype == torch.uint8 and img.ndim == 4 and img.shape[-1] == 3
+        height, width = img.shape[-3:-1]
         seed = -1 if generator is None else generator.initial_seed()
-        
-        img_bgrchw_255 = img.movedim(-3, -1).mul(255).to(torch.uint8).flip(-1).contiguous()
-        img_rgbhwc_1 = img.movedim(-3, -1).contiguous()
 
         rects = torch.zeros( (img.shape[0], self.max_num_rects, 4), dtype = torch.int32)
         reg   = torch.zeros( (img.shape[0], self.max_num_rects, 5), dtype = torch.int32)
@@ -50,7 +47,7 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
         
         boxes_xywh, regions, reg_lab = [], [], []
 
-        for k, i in enumerate(img_bgrchw_255):
+        for k, i in enumerate(img_bgrbhw3_255):
             self.bind_num_rects.value = self.max_num_rects
             self.bind_num_seg.value = self.max_num_seg
             

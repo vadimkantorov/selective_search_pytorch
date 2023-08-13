@@ -226,14 +226,14 @@ class SelectiveSearch(torch.nn.Module):
         self.postprocess_labels = postprocess_labels if postprocess_labels is not None else (lambda reg_lab: reg_lab)
 
         if self.preset == 'single': # base_k = 200
-            self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4)
+            self.stack_color_spaces = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4)
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(base_k), self.min_size)]
             self.strategies = torch.tensor([
                 [0.25, 0.25, 0.25, 0.25],
             ])
             
         elif self.preset == 'fast':
-            self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv, lab], dim = -4) 
+            self.stack_color_spaces = lambda rgb, hsv, lab, gray: torch.stack([hsv, lab], dim = -4) 
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
             self.strategies = torch.tensor([
                 [0.25, 0.25, 0.25, 0.25],
@@ -241,7 +241,7 @@ class SelectiveSearch(torch.nn.Module):
             ])
         
         elif self.preset == 'quality':
-            self.images = lambda rgb, hsv, lab, gray: torch.stack([hsv, lab, gray.expand_as(hsv), hsv[..., :1, :, :].expand_as(hsv), torch.cat([rgb[..., :2, :, :],  gray], dim = -3)], dim = -4)
+            self.stack_color_spaces = lambda rgb, hsv, lab, gray: torch.stack([hsv, lab, gray.expand_as(hsv), hsv[..., :1, :, :].expand_as(hsv), torch.cat([rgb[..., :2, :, :],  gray], dim = -3)], dim = -4)
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 4, self.inc_k)]
             self.strategies = torch.tensor([
                 [0.25, 0.25, 0.25, 0.25],
@@ -254,14 +254,13 @@ class SelectiveSearch(torch.nn.Module):
     def get_region_mask(reg_lab, regs):
         return torch.stack([(reg_lab[reg['plane_id'][:-1]].unsqueeze(-1) == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
 
-    def forward(self, img : 'B3HW', generator = None, print = print):
-        img = torch.as_tensor(img).contiguous()
-        assert img.is_floating_point() and img.ndim == 4 and img.shape[-3] == 3
+    def forward(self, *, img_rgbb3hw_1 : 'B3HW', generator = None, print = print):
+        assert img_rgbb3hw_1.is_contiguous() and img_rgbb3hw_1.is_floating_point() and img_rgbb3hw_1.ndim == 4 and img_rgbb3hw_1.shape[-3] == 3
 
         tic = time.time()
 
         # all image planes will be in [0.0; 255.0]
-        hsv, lab, gray = rgb_to_hsv(img), rgb_to_lab(img), rgb_to_grayscale(img)
+        hsv, lab, gray = rgb_to_hsv(img_rgbb3hw_1), rgb_to_lab(img_rgbb3hw_1), rgb_to_grayscale(img_rgbb3hw_1)
         #_hsv = _rgb_to_hsv(img)
         #hsv_ = torch.as_tensor(cv2.cvtColor(img[0].movedim(0, -1).numpy(), cv2.COLOR_RGB2HSV)) # 360, 1, 1
         
@@ -272,7 +271,7 @@ class SelectiveSearch(torch.nn.Module):
         lab[..., 1:,:, :] += 128/255.0
         
         # BxCx3xHxW in [0.0, 1.0]
-        imgs = self.images(img, hsv, lab, gray)
+        imgs = self.stack_color_spaces(img_rgbb3hw_1, hsv, lab, gray)
         
         # BxCx3xRxHxW (R = #rotations)
         grads = normalize_min_max_(image_gaussian_grads(imgs.flatten(end_dim = -4)).unflatten(0, imgs.shape[:-3]), dim = (-2, -1))
