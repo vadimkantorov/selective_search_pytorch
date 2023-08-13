@@ -54,7 +54,8 @@ def main(img_rgbhw3_255, gradio, input_path, output_dir, preset, algo, remove_du
             print(prof.key_averages().table(sort_by = 'cpu_time_total', row_limit = 50))
         
         plane_ids = sorted(set(reg['plane_id'] for reg in sum(regions, [])))
-    
+   
+
     elif algo == 'opencv_custom':
         algo = selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = preset, remove_duplicate_boxes = remove_duplicate_boxes, lib_path = selectivesearchsegmentation_opencv_custom_so)
         img_bgr1hw3_255 = torch.as_tensor(img_rgbhw3_255[::-1].copy()).unsqueeze(0)
@@ -62,6 +63,7 @@ def main(img_rgbhw3_255, gradio, input_path, output_dir, preset, algo, remove_du
         tic = time.time()
         boxes_xywh, regions, reg_lab = algo(img_bgrbhw3_255 = img_bgr1hw3_255, generator = torch.Generator().manual_seed(seed), print = print)
         toc = time.time()
+        
         plane_ids = sorted(set(reg['plane_id'] for reg in sum(regions, [])))
     
 
@@ -103,7 +105,7 @@ def main(img_rgbhw3_255, gradio, input_path, output_dir, preset, algo, remove_du
 
     print('vis time', time.time() - tic, end = '\n\n')
 
-    return repr(print), (vis_instance_grids[0][0] if vis_instance_grids else None), vis_instance_grids[1:], vis_merging_segments, vis_merging_trees
+    return repr(print), len(sum(regions, [])), (vis_instance_grids[0][0] if vis_instance_grids else None), vis_instance_grids[1:], vis_merging_segments, vis_merging_trees
 
 def plot_instance_grids(basename, output_dir, grid, img_rgbhw3_255, beginboxind, endboxind, plane_ids, algo, boxes_xywh, regions, reg_lab, ext = 'png'):
     res = []
@@ -248,6 +250,7 @@ if __name__ == '__main__':
         ]
         gradio_outputs = [
             gradio.Textbox(label = 'log'),
+            gradio.Number(label = 'num boxes', minimum = 0, precision = 0, value = 0),
             gradio.Image(label = 'top boxes'),
             gradio.Gallery(label = 'instance grids'),
             gradio.Gallery(label = 'merging segments'),
