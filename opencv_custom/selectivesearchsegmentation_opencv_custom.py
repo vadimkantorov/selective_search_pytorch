@@ -34,14 +34,13 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
         return torch.stack([(reg_lab[tuple(reg['plane_id'][:-1])].unsqueeze(-1) == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
 
     def forward(self, *, img_bgrbhw3_255 : 'BHW3', generator = None, print = print):
-        assert img_bgrbhw3_255.is_contiguous() and img_bgrhw3_255.dtype == torch.uint8 and img.ndim == 4 and img.shape[-1] == 3
-        height, width = img.shape[-3:-1]
+        assert img_bgrbhw3_255.is_contiguous() and img_bgrbhw3_255.dtype == torch.uint8 and img_bgrbhw3_255.ndim == 4 and img_bgrbhw3_255.shape[-1] == 3
         seed = -1 if generator is None else generator.initial_seed()
 
-        rects = torch.zeros( (img.shape[0], self.max_num_rects, 4), dtype = torch.int32)
-        reg   = torch.zeros( (img.shape[0], self.max_num_rects, 5), dtype = torch.int32)
-        bit   = torch.zeros( (img.shape[0], self.max_num_rects, self.max_num_bit), dtype = torch.uint8)
-        seg   = torch.zeros( (img.shape[0], self.max_num_seg, height, width), dtype = torch.int32)
+        rects = torch.zeros( (img_bgrbhw3_255.shape[0], self.max_num_rects, 4), dtype = torch.int32)
+        reg   = torch.zeros( (img_bgrbhw3_255.shape[0], self.max_num_rects, 5), dtype = torch.int32)
+        bit   = torch.zeros( (img_bgrbhw3_255.shape[0], self.max_num_rects, self.max_num_bit), dtype = torch.uint8)
+        seg   = torch.zeros( (img_bgrbhw3_255.shape[0], self.max_num_seg, img_bgrbhw3_255.shape[-3], img_bgrbhw3_255.shape[-2]), dtype = torch.int32)
         
         boxes_xywh, regions, reg_lab = [], [], []
 
@@ -50,7 +49,7 @@ class SelectiveSearchOpenCVCustom(torch.nn.Module):
             self.bind_num_seg.value = self.max_num_seg
             
             assert 0 == self.bind.process(
-                i.data_ptr(), height, width, 
+                i.data_ptr(), img_bgrbhw3_255.shape[-3], img_bgrbhw3_255.shape[-2], 
                 rects[k].data_ptr(), ctypes.addressof(self.bind_num_rects),
                 seg[k].data_ptr(), ctypes.addressof(self.bind_num_seg),
                 reg[k].data_ptr(),
