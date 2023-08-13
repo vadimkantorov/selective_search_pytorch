@@ -41,7 +41,7 @@ def main(img_rgbhw3_255, gradio, input_path, output_dir, preset, algo, remove_du
 
     if algo == 'pytorch':
         algo = selectivesearchsegmentation.SelectiveSearch(preset = preset, remove_duplicate_boxes = remove_duplicate_boxes)
-        img_rgb13hw_1 = torch.as_tensor(img_rgbhw3_255).movedim(-1, -3).div(255).unsqueeze(0)
+        img_rgb13hw_1 = torch.as_tensor(img_rgbhw3_255).movedim(-1, -3).div(255).unsqueeze(0).contiguous()
         
         prof = torch.profiler.profile(activities = [torch.profiler.ProfilerActivity.CPU], record_shapes = True)
         if profile:
@@ -58,7 +58,7 @@ def main(img_rgbhw3_255, gradio, input_path, output_dir, preset, algo, remove_du
 
     elif algo == 'opencv_custom':
         algo = selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = preset, remove_duplicate_boxes = remove_duplicate_boxes, lib_path = selectivesearchsegmentation_opencv_custom_so)
-        img_bgr1hw3_255 = torch.as_tensor(img_rgbhw3_255[::-1].copy()).unsqueeze(0)
+        img_bgr1hw3_255 = torch.as_tensor(img_rgbhw3_255[::-1].copy()).unsqueeze(0).contiguous()
 
         tic = time.time()
         boxes_xywh, regions, reg_lab = algo(img_bgrbhw3_255 = img_bgr1hw3_255, generator = torch.Generator().manual_seed(seed), print = print)
@@ -175,7 +175,6 @@ def plot_merging_segments(basename, output_dir, grid, seed, plane_ids, algo, box
         
         levels = sorted(set(reg['level'] for reg in regs))
         level2regions = {level : [reg for reg in regs if (reg['level'] == level) or (reg['level'] < level and idx2reg[reg['parent_idx']]['level'] > level)] for level in levels}
-        #level2regions = {k : list(g) for k, g in itertools.groupby(sorted(regs, key = key_level), key = key_level)}
 
         fig = plt.figure(figsize = (grid, grid))
         fig.set_tight_layout(True)

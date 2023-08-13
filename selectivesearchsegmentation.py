@@ -345,13 +345,13 @@ class SelectiveSearch(torch.nn.Module):
             reg['rank'] = reg['level'] * randuniform01 
 
         key_img_id, key_rank = (lambda reg: reg['plane_id'][0]), (lambda reg: reg['rank'])
-        regions_by_image = list(map({k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 0], key = key_img_id), key = key_img_id)}.get, range(len(img))))
+        regions_by_image = list(map({k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 0], key = key_img_id), key = key_img_id)}.get, range(len(img_rgbb3hw_1))))
         
 
         if self.remove_duplicate_boxes:
-            boxes_xywh_without_duplicates = [{reg['bbox_xywh'] : i for i, reg in enumerate(by_image[b]) } for b in range(len(img))]
-            boxes_xywh = [torch.tensor(list(boxes_xywh_without_duplicates[b].keys()), dtype = torch.int16) for b in range(len(img))]
-            regions = [[by_image[b][i] for i in boxes_xywh_without_duplicates[b].values()] for b in range(len(img))]
+            boxes_xywh_without_duplicates = [{reg['bbox_xywh'] : i for i, reg in enumerate(by_image[b]) } for b in range(len(img_rgbb3hw_1))]
+            boxes_xywh = [torch.tensor(list(boxes_xywh_without_duplicates[b].keys()), dtype = torch.int16) for b in range(len(img_rgbb3hw_1))]
+            regions = [[by_image[b][i] for i in boxes_xywh_without_duplicates[b].values()] for b in range(len(img_rgbb3hw_1))]
         else:
             boxes_xywh = [torch.tensor([reg['bbox_xywh'] for reg in regs], dtype = torch.int16) for regs in regions_by_image]
             regions = regions_by_image
