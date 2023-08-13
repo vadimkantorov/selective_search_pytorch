@@ -314,12 +314,11 @@ class SelectiveSearch(torch.nn.Module):
         PQ = list(zip(sim.neg().tolist(), (plane_idx + r1).tolist(), (plane_idx + r2).tolist()))
         
         # (BCGT)xSxS
-        gasym_sparse = (ga + ga.transpose(-2, -1)).to_sparse()
-        (plane_idx, r1, r2), sim = gasym_sparse.indices(), gasym_sparse.values()
+        (plane_idx, r1, r2) = (ga + ga.transpose(-2, -1)).to_sparse().indices()
         plane_idx *= max_num_segments
         graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((plane_idx + r1).tolist(), (plane_idx + r2).tolist()), key = lambda t: t[0])}
         
-        regs = [dict(strategy = strategy, plane_id = (b, c, g, t), plane_idx = plane_idx, id = r1, ids = {r1}, idx = r1, parent_idx = -1, level = 0 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(region_features.xywh_[plane_idx * max_num_segments + r1])) for plane_idx, (b, c, g, t, strategy) in enumerate((b, c, g, t, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for t, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
+        regs = [dict(strategy = strategy, plane_id = (b, c, g, t), plane_idx = plane_idx, id = r1, ids = {r1}, idx = r1, parent_idx = -1, level = 1 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(region_features.xywh_[plane_idx * max_num_segments + r1])) for plane_idx, (b, c, g, t, strategy) in enumerate((b, c, g, t, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for t, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
         
         region_features.merge_regions_counter, region_features.merge_regions_time = 0, 0.0
         region_features.compute_region_affinity_counter, region_features.compute_region_affinity_time = 0, 0.00
@@ -339,11 +338,12 @@ class SelectiveSearch(torch.nn.Module):
             for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_idx'], region_features, regs, graph):
                 heapq.heappush(PQ, new_edge)
         
-        for reg, randuniform01 in zip(regs, torch.rand(len(regs), generator = generator).tolist()):
-            reg['rank'] = reg['level'] * randuniform01 
-
         print('merge reg', region_features.merge_regions_counter, region_features.merge_regions_time)
         print('sim reg', region_features.compute_region_affinity_counter, region_features.compute_region_affinity_time)
+
+        #TODO: disable random ordering
+        for reg, randuniform01 in zip(regs, torch.rand(len(regs), generator = generator).tolist()):
+            reg['rank'] = reg['level'] * randuniform01 
 
         key_img_id, key_rank = (lambda reg: reg['plane_id'][0]), (lambda reg: reg['rank'])
         regions_by_image = list(map({k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 0], key = key_img_id), key = key_img_id)}.get, range(len(img))))

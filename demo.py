@@ -160,38 +160,40 @@ def plot_merging_segments(basename, output_dir, grid, seed, plane_ids, algo, box
     res = []
     for plane_id in plane_ids:
         regs = [reg for reg in sum(regions, []) if reg['plane_id'] == plane_id]
+        idx2reg = {reg['idx'] : reg for reg in regs}
         suffix = ''.join(map(str, plane_id))
         output_path = os.path.join(output_dir, f'{ext}_{basename}.{suffix}.{ext}')
         
-        key_level = lambda reg: reg['level']
-        level2regions = {k : list(g) for k, g in itertools.groupby(sorted(regs, key = key_level), key = key_level)}
+        levels = sorted(set(reg['level'] for reg in regs))
+        level2regions = {level : [reg for reg in regs if (reg['level'] == level) or (reg['level'] < level and idx2reg[reg['parent_idx']]['level'] > level)] for level in levels}
+        #level2regions = {k : list(g) for k, g in itertools.groupby(sorted(regs, key = key_level), key = key_level)}
 
         fig = plt.figure(figsize = (grid, grid))
         fig.set_tight_layout(True)
         def update(level, im = []):
             segm = reg_lab[plane_id[:-1]].clone()
             max_num_segments = 1 + int(segm.amax())
+            num_regs = len(level2regions[level])
 
             colormap = torch.as_tensor(matplotlib.colormaps['jet'].resampled(max_num_segments)(range(max_num_segments)))
-            colormap_shuffled = cmap[torch.randperm(max_num_segments, generator = torch.Generator().manual_seed(seed))]
+            colormap = colormap[torch.randperm(max_num_segments, generator = torch.Generator().manual_seed(seed))]
             
             for reg in level2regions[level]:
                 min_id = min(reg['ids'])
                 for reg_id in reg['ids']:
                     segm[segm == reg_id] = min_id
-            
-            img = colormap_shuffled[segm]
+           
+            img = colormap[segm]
 
             if not im:
-                im.append(plt.imshow(img, animated = True, cmap = 'hsv', aspect = 'auto'))
+                im.append(plt.imshow(img, animated = True, aspect = 'auto'))
                 plt.axis('off')
-
             im[0].set_array(img)
             im[0].set_clim(0, 1)
-            plt.suptitle(f'level: [{level}]')
+            plt.suptitle(f'level: [{level}], #regs: {num_regs}')
             return im
 
-        matplotlib.animation.FuncAnimation(fig, update, frames = sorted(level2regions), interval = 1000).save(output_path, dpi = 80)
+        matplotlib.animation.FuncAnimation(fig, update, frames = levels, interval = 1000).save(output_path, dpi = 80)
         plt.close(fig)
         print(output_path)
         res.append((output_path, suffix))
@@ -206,7 +208,7 @@ if __name__ == '__main__':
     parser.add_argument('--vis-merging-trees', action = 'store_true')
     parser.add_argument('--input-path', '-i', default = './examples/astronaut.jpg')
     parser.add_argument('--output-dir', '-o', default = './out/')
-    parser.add_argument('--preset', choices = ['fast', 'quality', 'single'], default = 'fast')
+    parser.add_argument('--preset', choices = ['fast', 'quality', 'single'], default = 'single')
     parser.add_argument('--algo', choices = ['pytorch', 'opencv', 'opencv_custom'], default = 'pytorch')
     parser.add_argument('--beginboxind', type = int, default = 0)
     parser.add_argument('--endboxind', type = int, default = 64)
