@@ -25,7 +25,7 @@ try:
     from opencv_custom import selectivesearchsegmentation_opencv_custom
 except Exception as e:
     print(e)
-    selectivesearchsegmentation_opencv_custom = None
+    selectivesearchsegmentation_opencv_custom__ = None
 
 def main(img_rgbhw3_255, gradio, input_path, output_dir, preset, algo, remove_duplicate_boxes, profile, seed, grid, beginboxind, endboxind, selectivesearchsegmentation_opencv_custom_so, vis_instance_grids, vis_merging_segments, vis_merging_trees):
 
@@ -58,8 +58,8 @@ def main(img_rgbhw3_255, gradio, input_path, output_dir, preset, algo, remove_du
 
     elif algo == 'opencv_custom':
         algo = selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = preset, remove_duplicate_boxes = remove_duplicate_boxes, lib_path = selectivesearchsegmentation_opencv_custom_so)
-        img_bgr1hw3_255 = torch.as_tensor(img_rgbhw3_255[::-1].copy()).unsqueeze(0).contiguous()
-
+        img_bgr1hw3_255 = torch.as_tensor(img_rgbhw3_255).flip(-1).unsqueeze(0))
+       
         tic = time.time()
         boxes_xywh, regions, reg_lab = algo(img_bgrbhw3_255 = img_bgr1hw3_255, generator = torch.Generator().manual_seed(seed), print = print)
         toc = time.time()
@@ -69,7 +69,7 @@ def main(img_rgbhw3_255, gradio, input_path, output_dir, preset, algo, remove_du
 
     elif algo == 'opencv':
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
-        img_bgrhw3_255 = img_rgbhw3_255[::-1].copy()
+        img_bgrhw3_255 = img_rgbhw3_255[..., ::-1].copy()
 
         algo.setBaseImage(img_bgrhw3_255)
         dict(fast = algo.switchToSelectiveSearchFast, quality = algo.switchToSelectiveSearchQuality, single = algo.switchToSingleStrategy)[preset]()
