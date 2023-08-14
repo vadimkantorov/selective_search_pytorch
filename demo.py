@@ -233,7 +233,6 @@ if __name__ == '__main__':
     print(args.output_dir)
 
     if args.gradio:
-        # importing gradio on top makes the program hang after finish
         import gradio
         gradio_inputs = [
             gradio.Image(label = 'input image', value = args.input_path),
