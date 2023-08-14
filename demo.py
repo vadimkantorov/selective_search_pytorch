@@ -58,7 +58,7 @@ def main(img_rgbhw3_255, gradio, input_path, output_dir, preset, algo, remove_du
 
     elif algo == 'opencv_custom':
         algo = selectivesearchsegmentation_opencv_custom.SelectiveSearchOpenCVCustom(preset = preset, remove_duplicate_boxes = remove_duplicate_boxes, lib_path = selectivesearchsegmentation_opencv_custom_so)
-        img_bgr1hw3_255 = torch.as_tensor(img_rgbhw3_255).flip(-1).unsqueeze(0))
+        img_bgr1hw3_255 = torch.as_tensor(img_rgbhw3_255).flip(-1).unsqueeze(0)
        
         tic = time.time()
         boxes_xywh, regions, reg_lab = algo(img_bgrbhw3_255 = img_bgr1hw3_255, generator = torch.Generator().manual_seed(seed), print = print)
@@ -207,6 +207,7 @@ def plot_merging_segments(basename, output_dir, grid, seed, plane_ids, algo, box
         res.append((output_path, suffix))
     return res
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--selectivesearchsegmentation_opencv_custom_so', default = 'opencv_custom/selectivesearchsegmentation_opencv_custom_.so', help = 'NumPy will print warning "UserWarning: The value of the smallest subnormal for <class numpy.float64 type is zero" becasue the .so is built with -Ofast which setz FTZ flush-to-zero CPU flag, details at https://moyix.blogspot.com/2022/09/someones-been-messing-with-my-subnormals.html')
@@ -224,7 +225,6 @@ if __name__ == '__main__':
     parser.add_argument('--profile', action = 'store_true') 
     parser.add_argument('--seed', type = int, default = 42)
     parser.add_argument('--grid', type = int, default = 4)
-    
     args = parser.parse_args()
 
     print(args, end = '\n\n')
@@ -233,7 +233,7 @@ if __name__ == '__main__':
     print(args.output_dir)
 
     if args.gradio:
-        # importing gradio on top, makes the program hang after finish
+        # importing gradio on top makes the program hang after finish
         import gradio
         gradio_inputs = [
             gradio.Image(label = 'input image', value = args.input_path),
