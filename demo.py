@@ -16,6 +16,12 @@ except Exception as e:
     cv2 = None
 
 try:
+    import gradio
+except Exception as e:
+    print(e)
+    gradio = None
+
+try:
     import selectivesearchsegmentation
 except Exception as e:
     print(e)
@@ -233,7 +239,6 @@ if __name__ == '__main__':
     print(args.output_dir)
 
     if args.gradio:
-        import gradio
         gradio_inputs = [
             gradio.Image(label = 'input image', value = args.input_path),
             gradio.Radio(label = 'preset', choices = ['fast', 'quality', 'single'], value = 'single'),
