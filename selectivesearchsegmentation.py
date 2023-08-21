@@ -207,13 +207,13 @@ def bbox_per_segment(reg_lab_int64 : 'BHW', max_num_segments : int, dtype = torc
 
 def area_per_segment(reg_lab_int64 : 'BHW', max_num_segments : int, dtype = torch.int32):
     # Bx(HW)
-    Z = reg_lab_int64.flatten(start_dim = -2)
+    I = reg_lab_int64.flatten(start_dim = -2)
     # BxS
-    return torch.zeros(*reg_lab_int64.shape[:-2], max_num_segments, dtype = dtype).scatter_add_(-1, Z, expand_ones_like(Z, dtype = dtype))
+    return torch.zeros(*reg_lab_int64.shape[:-2], max_num_segments, dtype = dtype).scatter_add_(-1, I, expand_ones_like(I, dtype = dtype))
 
 class SelectiveSearch(torch.nn.Module):
     # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
-    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', postprocess_labels = None, color_hist_bins = 8 * 4, texture_hist_bins = 8, remove_duplicate_boxes = False):
+    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', postprocess_labels = None, color_hist_bins = 8 * 4, texture_hist_bins = 8, remove_duplicate_boxes = False, randomize_rank = True):
         super().__init__()
         self.base_k = base_k
         self.inc_k = inc_k
@@ -223,6 +223,7 @@ class SelectiveSearch(torch.nn.Module):
         self.remove_duplicate_boxes = remove_duplicate_boxes
         self.color_hist_bins = color_hist_bins
         self.texture_hist_bins = texture_hist_bins
+        self.randomize_rank = randomize_rank
         self.postprocess_labels = postprocess_labels if postprocess_labels is not None else (lambda reg_lab: reg_lab)
 
         if self.preset == 'single': # base_k = 200
@@ -259,7 +260,7 @@ class SelectiveSearch(torch.nn.Module):
 
         tic = time.time()
 
-        # all image planes will be in [0.0; 255.0]
+        # all image planes will be in [0.0; 255.0], input in [0.0, 1.0]
         hsv, lab, gray = rgb_to_hsv(img_rgbb3hw_1), rgb_to_lab(img_rgbb3hw_1), rgb_to_grayscale(img_rgbb3hw_1)
         #_hsv = _rgb_to_hsv(img)
         #hsv_ = torch.as_tensor(cv2.cvtColor(img[0].movedim(0, -1).numpy(), cv2.COLOR_RGB2HSV)) # 360, 1, 1
@@ -279,7 +280,7 @@ class SelectiveSearch(torch.nn.Module):
 
         # BxCxGxHxW (C = #colorspaces, G = #graphsegs)
         # https://github.com/opencv/opencv_contrib/issues/3544 seems that float32 [0.0, 1.0] inputs are not correctly supported
-        reg_lab = self.postprocess_labels(torch.stack([torch.as_tensor(gs.processImage(img)) for img in imgs.flatten(end_dim = -4).movedim(-3, -1).mul(255.0).numpy() for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),)))
+        reg_lab = self.postprocess_labels(torch.stack([torch.as_tensor(gs.processImage(img)) for img in imgs.flatten(end_dim = -4).movedim(-3, -1).mul(255.0).contiguous().numpy() for gs in self.segmentations]).unflatten(0, imgs.shape[:-3] + (len(self.segmentations),)))
         # BxCxG
         num_segments = reg_lab.amax(dim = (-2, -1)).add_(1)
         max_num_segments = int(num_segments.amax())
@@ -340,9 +341,8 @@ class SelectiveSearch(torch.nn.Module):
         print('merge reg', region_features.merge_regions_counter, region_features.merge_regions_time)
         print('sim reg', region_features.compute_region_affinity_counter, region_features.compute_region_affinity_time)
 
-        #TODO: disable random ordering
-        for reg, randuniform01 in zip(regs, torch.rand(len(regs), generator = generator).tolist()):
-            reg['rank'] = reg['level'] * randuniform01 
+        for reg, level_multiplier in zip(regs, torch.rand(len(regs), generator = generator).tolist() if self.randomize_rank else torch.ones(len(regs)).tolist()):
+            reg['rank'] = reg['level'] * level_multiplier
 
         key_img_id, key_rank = (lambda reg: reg['plane_id'][0]), (lambda reg: reg['rank'])
         regions_by_image = list(map({k: sorted(list(g), key = key_rank) for k, g in itertools.groupby(sorted([reg for reg in regs if reg['level'] >= 0], key = key_img_id), key = key_img_id)}.get, range(len(img_rgbb3hw_1))))
@@ -403,18 +403,18 @@ class HandcraftedRegionFeatures:
         self.xywh = bbox_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments, dtype = torch.int16)
 
         # BxCxGx3x(HW), img_bins is broadcasted
-        Z = (reg_lab[..., None, :, :] * color_hist_bins + imgs_bins).flatten(start_dim = -2)
+        I = (reg_lab[..., None, :, :] * color_hist_bins + imgs_bins).flatten(start_dim = -2)
         # BxCxGxSxD1 (f32) where S = #segments and D1 = 96
-        self.color_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, self.max_num_segments * color_hist_bins, dtype = torch.float32).scatter_add_(-1, Z.to(torch.int64), expand_ones_like(Z, dtype = torch.float32)).unflatten(-1, (self.max_num_segments, color_hist_bins)).movedim(-2, -3).flatten(start_dim = -2)
+        self.color_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, self.max_num_segments * color_hist_bins, dtype = torch.float32).scatter_add_(-1, I.to(torch.int64), expand_ones_like(I, dtype = torch.float32)).unflatten(-1, (self.max_num_segments, color_hist_bins)).movedim(-2, -3).flatten(start_dim = -2)
         # for histogram normalization, each pixel contributes to 3 = #colorchannels bins, eps to avoid divbyzero and nans in affinity
         self.color_hist /= self.region_sizes.mul(float(imgs_bins.shape[-3])).add_(eps).unsqueeze(-1)
         # 3*N (f32) where 3 = #colorchannels, N = #colorbins
         self.color_hist_buffer = torch.empty(self.color_hist.shape[-1], dtype = self.color_hist.dtype)
 
         # BxCxGx3xRx(HW), grads_bins is broadcasted
-        Z = (reg_lab[..., None, None, :, :] * texture_hist_bins + grads_bins).flatten(start_dim = -2)
+        I = (reg_lab[..., None, None, :, :] * texture_hist_bins + grads_bins).flatten(start_dim = -2)
         # BxCxGxSxD2 (f32) where S = #segments and D1 = 192
-        self.texture_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, grads_bins.shape[-3], self.max_num_segments * texture_hist_bins, dtype = torch.float32).scatter_add_(-1, Z.to(torch.int64), expand_ones_like(Z, dtype = torch.float32)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3)
+        self.texture_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, grads_bins.shape[-3], self.max_num_segments * texture_hist_bins, dtype = torch.float32).scatter_add_(-1, I.to(torch.int64), expand_ones_like(I, dtype = torch.float32)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3)
         # for histogram normalization, each pixel contributes to (3 = #colorchannels) * (8 = #rotations) bins, maybe except exactly 0textures which contribute to several bins, eps to avoid divbyzero and nans in affinity
         self.texture_hist /= self.region_sizes.mul(float(grads_bins.shape[-4] * grads_bins.shape[-3])).add_(eps).unsqueeze(-1)
         # 3*N (f32) where 3 = #colorchannels, N = #texturebins

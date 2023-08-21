@@ -52,22 +52,6 @@ class MergedRegionsForestDataset(torch.utils.data.Dataset):
         # assert dist.isfinite().all()
         return dist
 
-    @staticmethod
-    def build_graph(regions):
-        sim = -torch.ones((len(regions), len(regions)), dtype = torch.float32)
-        
-        for i, ri in enumerate(regions):
-            for j, rj in enumerate(regions):
-                if i < j and ri['level'] == rj['level'] == 0:
-                    for k, rk in enumerate(regions):
-                        if ri['id'] in rk['ids'] and rj['id'] in rk['ids']:
-                            sim[i, j] = sim[j, i] = sum([rk['level'] - ri['level'], rk['level'] - rj['level'] ]) / 2.0
-                            break
-
-        sim = (1 - sim / sim.amax()).masked_fill_(sim < 0, 0.0).clamp_(min = 0.05)
-        sim.diagonal().fill_(1)
-        return sim
-
 class HypHCVisualEmbedding(nn.Embedding):
     # adapted from https://github.com/HazyResearch/HypHC
     def __init__(self, num_embeddings: int = 1, embedding_dim: int = 2, max_norm: float = 1. - 1e-3, init_size: float = 1e-3):
