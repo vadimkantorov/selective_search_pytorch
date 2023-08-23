@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
 def _rgb_to_hsv(image: torch.Tensor) -> torch.Tensor:
+# https://github.com/pytorch/vision/blob/11e49de410ec84ec669293a91dfaa13a53c9bc47/torchvision/transforms/v2/functional/_color.py#L272
     r, g, _ = image.unbind(dim=-3)
 
     # Implementation is based on
@@ -49,7 +50,7 @@ def _rgb_to_hsv(image: torch.Tensor) -> torch.Tensor:
     return torch.stack((h, s, maxc), dim=-3)
 
 def rgb_to_hsv(image, eps: float = 1e-6):
-    # https://github.com/kornia/kornia/blob/master/kornia/color/hsv.py
+# https://github.com/kornia/kornia/blob/master/kornia/color/hsv.py
     maxc, _ = image.max(-3)
     maxc_mask = image == maxc.unsqueeze(-3)
     _, max_indices = ((maxc_mask.cumsum(-3) == 1) & maxc_mask).max(-3)
@@ -79,10 +80,10 @@ def rgb_to_hsv(image, eps: float = 1e-6):
     return torch.stack([h, s, v], dim=-3)
 
 def rgb_to_lab(image):
-    # https://github.com/kornia/kornia/blob/master/kornia/color/lab.py
+# https://github.com/kornia/kornia/blob/master/kornia/color/lab.py
     
     def rgb_to_xyz(image):
-        # https://github.com/kornia/kornia/blob/master/kornia/color/xyz.py
+# https://github.com/kornia/kornia/blob/master/kornia/color/xyz.py
         r, g, b = image.unbind(dim = -3)
         x = 0.412453 * r + 0.357580 * g + 0.180423 * b
         y = 0.212671 * r + 0.715160 * g + 0.072169 * b
@@ -90,7 +91,7 @@ def rgb_to_lab(image):
         return torch.stack([x, y, z], -3)
 
     def rgb_to_linear_rgb(image):
-        # https://github.com/kornia/kornia/blob/master/kornia/color/rgb.py
+# https://github.com/kornia/kornia/blob/master/kornia/color/rgb.py
         return torch.where(image > 0.04045, torch.pow(((image + 0.055) / 1.055), 2.4), image / 12.92)
 
     # Convert begin sRGB to Linear RGB
@@ -116,7 +117,7 @@ def rgb_to_lab(image):
     return torch.stack([L, a, b], dim=-3)
 
 def rgb_to_grayscale(image, rgb_weights = [0.299, 0.587, 0.114]):
-    # https://github.com/kornia/kornia/blob/master/kornia/color/gray.py
+# https://github.com/kornia/kornia/blob/master/kornia/color/gray.py
     r, g, b = image.unsqueeze(-4).unbind(dim = -3)
     return rgb_weights[0] * r + rgb_weights[1] * g + rgb_weights[2] * b
 
@@ -169,22 +170,25 @@ def rotated_xywh(img_height : int, img_width : int, angle = 45.0, scale = 1.0):
 
     return xywh
 
-def bbox_merge_tensor(xywh1 : torch.Tensor, xywh2 : torch.Tensor, dtype = None) -> torch.Tensor:
+def bbox_merge_tensor(xywh1 : torch.Tensor, xywh2 : torch.Tensor, dtype = None, return_area = False) -> torch.Tensor:
+    assert return_area
+
     xy1, wh1 = xywh1.movedim(-1, 0).split(2)
     xy2, wh2 = xywh2.movedim(-1, 0).split(2)
 
     xymax1 = xy1.add(wh1).sub_(1) 
     xymax2 = xy2.add(wh2).sub_(1)
+    
     xymin = torch.min(xy1, xy2)
     xymax = torch.max(xymax1, xymax2)
     # work around for https://github.com/pytorch/pytorch/issues/54216
     w, h = xymax.sub_(xymin).add_(1)
-    return torch.mul(w, h, out = torch.tensor([], dtype = dtype))
+    return torch.mul(w.to(dtype), h.to(dtype))
 
-def bbox_merge(xywh1 : tuple, xywh2 : tuple, return_area = False):
-    x1, y1 = min(xywh1[0], xywh2[0]), min(xywh1[1], xywh2[1])
-    x2, y2 = max(xywh1[0] + xywh1[2] - 1, xywh2[0] + xywh2[2] - 1), max(xywh1[1] + xywh1[3] - 1, xywh2[1] + xywh2[3] - 1)
-    x, y, w, h = (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
+def bbox_merge_tuple(xywh1 : tuple, xywh2 : tuple, return_area = False):
+    xmin, ymin = min(xywh1[0], xywh2[0]), min(xywh1[1], xywh2[1])
+    xmax, ymax = max(xywh1[0] + xywh1[2] - 1, xywh2[0] + xywh2[2] - 1), max(xywh1[1] + xywh1[3] - 1, xywh2[1] + xywh2[3] - 1)
+    x, y, w, h = (xmin, ymin, xmax - xmin + 1, ymax - ymin + 1)
     return (w * h) if return_area else (x, y, w, h)
 
 def bbox_per_segment(reg_lab_int64 : 'BHW', max_num_segments : int, dtype = torch.int16):
@@ -212,8 +216,7 @@ def area_per_segment(reg_lab_int64 : 'BHW', max_num_segments : int, dtype = torc
     return torch.zeros(*reg_lab_int64.shape[:-2], max_num_segments, dtype = dtype).scatter_add_(-1, I, expand_ones_like(I, dtype = dtype))
 
 class SelectiveSearch(torch.nn.Module):
-    # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
-    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', postprocess_labels = None, color_hist_bins = 8 * 4, texture_hist_bins = 8, remove_duplicate_boxes = False, randomize_rank = True):
+    def __init__(self, base_k = 150, inc_k = 150, sigma = 0.8, min_size = 100, preset = 'fast', postprocess_labels = None, color_hist_bins = 8 * 4, texture_hist_bins = 8, remove_duplicate_boxes = False, randomize_rank = True, return_region_features = False):
         super().__init__()
         self.base_k = base_k
         self.inc_k = inc_k
@@ -224,38 +227,40 @@ class SelectiveSearch(torch.nn.Module):
         self.color_hist_bins = color_hist_bins
         self.texture_hist_bins = texture_hist_bins
         self.randomize_rank = randomize_rank
+        self.return_region_features = return_region_features
         self.postprocess_labels = postprocess_labels if postprocess_labels is not None else (lambda reg_lab: reg_lab)
 
         if self.preset == 'single': # base_k = 200
             self.stack_color_spaces = lambda rgb, hsv, lab, gray: torch.stack([hsv], dim = -4)
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(base_k), self.min_size)]
-            self.strategies = torch.tensor([
+            self.strategies = [
                 [0.25, 0.25, 0.25, 0.25],
-            ])
+            ]
             
         elif self.preset == 'fast':
             self.stack_color_spaces = lambda rgb, hsv, lab, gray: torch.stack([hsv, lab], dim = -4) 
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 2, self.inc_k)]
-            self.strategies = torch.tensor([
+            self.strategies = [
                 [0.25, 0.25, 0.25, 0.25],
-                [0.33, 0.33, 0.33, 0.00]
-            ])
+                [0.3333, 0.3333, 0.3333, 0.00],
+            ]
         
         elif self.preset == 'quality':
             self.stack_color_spaces = lambda rgb, hsv, lab, gray: torch.stack([hsv, lab, gray.expand_as(hsv), hsv[..., :1, :, :].expand_as(hsv), torch.cat([rgb[..., :2, :, :],  gray], dim = -3)], dim = -4)
             self.segmentations = [cv2.ximgproc.segmentation.createGraphSegmentation(self.sigma, float(k), self.min_size) for k in range(self.base_k, 1 + self.base_k + self.inc_k * 4, self.inc_k)]
-            self.strategies = torch.tensor([
+            self.strategies = [
                 [0.25, 0.25, 0.25, 0.25],
-                [0.33, 0.33, 0.33, 0.00],
+                [0.3333, 0.3333, 0.3333, 0.00],
                 [1.00, 0.00, 0.00, 0.00],
-                [0.00, 0.00, 1.00, 0.00]
-            ])
+                [0.00, 0.00, 1.00, 0.00],
+            ]
 
     @staticmethod
     def get_region_mask(reg_lab, regs):
         return torch.stack([(reg_lab[reg['plane_id'][:-1]].unsqueeze(-1) == torch.tensor(list(reg['ids']), device = reg_lab.device, dtype = reg_lab.dtype)).any(dim = -1) for reg in regs])
 
     def forward(self, *, img_rgbb3hw_1 : 'B3HW', generator = None, print = print):
+        # https://github.com/opencv/opencv_contrib/blob/master/modules/ximgproc/src/selectivesearchsegmentation.cpp
         assert img_rgbb3hw_1.is_contiguous() and img_rgbb3hw_1.is_floating_point() and img_rgbb3hw_1.ndim == 4 and img_rgbb3hw_1.shape[-3] == 3
 
         tic = time.time()
@@ -296,29 +301,33 @@ class SelectiveSearch(torch.nn.Module):
             texture_hist_bins = self.texture_hist_bins
         )
         # (BCG)xSxSx4 (S = max #segments)
-        affinity = region_features.compute_region_affinity().flatten(end_dim = -4)
+        affinity = region_features.compute_region_affinity_pdist(
+            img_size = region_features.img_size, 
+            region_size = region_features.region_size, 
+            bbox_xywh = region_features.bbox_xywh, 
+            texture_hist = region_features.texture_hist, 
+            color_hist = region_features.color_hist
+        ).flatten(end_dim = -4)
         region_features.repeat_for_strategies_and_flatten(len(self.strategies))
         print('region feat', time.time() - tic)
         
         # (BCG)xSxS
         graphadj = self.build_graph(reg_lab, max_num_segments = max_num_segments).flatten(end_dim = -3)
         # (BCG)xSxSxT (T = # sTrategies)
-        graphadj = (graphadj[..., None, None] * affinity.unsqueeze(-2) * self.strategies).sum(dim = -1)
+        graphadj = (graphadj[..., None, None] * affinity.unsqueeze(-2) * torch.tensor(self.strategies, dtype = affinity.dtype, device = affinity.device)).sum(dim = -1)
 
         # (BCGT)xSxS
         ga = graphadj.movedim(-1, -3).flatten(end_dim = -3)
         # (BCGT)xSxS
         ga_sparse = ga.to_sparse()
         (plane_idx, r1, r2), sim = ga_sparse.indices(), ga_sparse.values()
-        plane_idx *= max_num_segments
-        PQ = list(zip(sim.neg().tolist(), (plane_idx + r1).tolist(), (plane_idx + r2).tolist()))
-        
+        PQ = list(zip(sim.neg().tolist(), (plane_idx * max_num_segments + r1).tolist(), (plane_idx * max_num_segments + r2).tolist()))
         # (BCGT)xSxS
         (plane_idx, r1, r2) = (ga + ga.transpose(-2, -1)).to_sparse().indices()
-        plane_idx *= max_num_segments
-        graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((plane_idx + r1).tolist(), (plane_idx + r2).tolist()), key = lambda t: t[0])}
         
-        regs = [dict(strategy = strategy, plane_id = (b, c, g, t), plane_idx = plane_idx, id = r1, ids = {r1}, idx = r1, parent_idx = -1, level = 1 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(region_features.xywh_[plane_idx * max_num_segments + r1])) for plane_idx, (b, c, g, t, strategy) in enumerate((b, c, g, t, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for t, strategy in enumerate(self.strategies.tolist())) for r1 in range(graphadj.shape[-2])]
+        graph = {k : set(t[1] for t in g) for k, g in itertools.groupby(zip((plane_idx * max_num_segments + r1).tolist(), (plane_idx * max_num_segments + r2).tolist()), key = lambda t: t[0])}
+        
+        regs = [dict(strategy = strategy, plane_id = (b, c, g, t), plane_idx = plane_idx, id = r1, ids = {r1}, idx = r1, parent_idx = -1, level = 1 if r1 < int(num_segments[b, c, g]) else -1, bbox_xywh = tuple(region_features.bbox_xywh_[plane_idx * max_num_segments + r1]), region_size = region_features.region_size_[plane_idx * max_num_segments + r1], color_hist = region_features.color_hist_[plane_idx * max_num_segments + r1].clone() if self.return_region_features else None, texture_hist = region_features.texture_hist_[plane_idx * max_num_segments + r1].clone() if self.return_region_features else None) for plane_idx, (b, c, g, t, strategy) in enumerate((b, c, g, t, strategy) for b in range(num_segments.shape[0]) for c in range(num_segments.shape[1]) for g in range(num_segments.shape[2]) for t, strategy in enumerate(self.strategies)) for r1 in range(graphadj.shape[-2])]
         
         region_features.merge_regions_counter, region_features.merge_regions_time = 0, 0.0
         region_features.compute_region_affinity_counter, region_features.compute_region_affinity_time = 0, 0.00
@@ -329,13 +338,18 @@ class SelectiveSearch(torch.nn.Module):
                 continue
             
             reg_fro, reg_to = regs[u], regs[v]
-            regs.append( dict(strategy = reg_fro['strategy'], plane_id = reg_fro['plane_id'], plane_idx = reg_fro['plane_idx'], id = min(reg_fro['id'], reg_to['id']), ids = reg_fro['ids'] | reg_to['ids'], idx = len(regs), parent_idx = -1, level = 1 + max(reg_fro['level'], reg_to['level']) ) )
+            regs.append( dict(strategy = reg_fro['strategy'], plane_id = reg_fro['plane_id'], plane_idx = reg_fro['plane_idx'], id = min(reg_fro['id'], reg_to['id']), ids = reg_fro['ids'] | reg_to['ids'], idx = len(regs), parent_idx = -1, level = 1 + max(reg_fro['level'], reg_to['level']), texture_hist = None, color_Hist = None, region_size = None) )
             reg_fro['parent_idx'] = reg_to['parent_idx'] = len(regs) - 1
             tic = time.time()
-            regs[-1]['bbox_xywh'] = region_features.merge_regions_(reg_fro['id'], reg_to['id'], reg_fro['plane_idx'])
+            merged : dict = region_features.merge_regions_(reg_fro['id'], reg_to['id'], reg_fro['plane_idx'])
+            regs[-1]['bbox_xywh'] = merged['bbox_xywh']
+            regs[-1]['region_size'] = merged['region_size']
+            if self.return_region_features:
+                regs[-1]['texture_hist'] = merged['texture_hist'].clone()
+                regs[-1]['color_hist'] = merged['color_hist'].clone()
             region_features.merge_regions_time += time.time() - tic; region_features.merge_regions_counter += 1
 
-            for new_edge in self.contract_graph_edge(u, v, reg_fro['parent_idx'], region_features, regs, graph):
+            for new_edge in self.contract_graph_edge(region_features, u, v, reg_fro['parent_idx'], regs, graph):
                 heapq.heappush(PQ, new_edge)
         
         print('merge reg', region_features.merge_regions_counter, region_features.merge_regions_time)
@@ -372,7 +386,7 @@ class SelectiveSearch(torch.nn.Module):
         return A.coalesce().to(torch.bool).to_dense().triu(diagonal = 1)
 
     @staticmethod
-    def contract_graph_edge(u, v, ww, region_features, regs, graph):
+    def contract_graph_edge(self, u, v, ww, regs, graph):
         graph[ww] = set()
         new_edges = []
         for uu in [u, v]:
@@ -381,8 +395,24 @@ class SelectiveSearch(torch.nn.Module):
                     continue
 
                 tic = time.time()
-                new_edges.append((-region_features.compute_region_affinity(regs[ww]['id'], regs[vv]['id'], regs[ww]['plane_idx'], *regs[ww]['strategy']), ww, vv))
-                region_features.compute_region_affinity_time += time.time() - tic; region_features.compute_region_affinity_counter += 1
+                #aff = region_features.compute_region_affinity(regs[ww]['id'], regs[vv]['id'], regs[ww]['plane_idx'], None, *regs[ww]['strategy'])
+                (plane_idx, r1, r2) = regs[ww]['plane_idx'], regs[ww]['id'], regs[vv]['id'] 
+                aff = self.compute_region_affinity_pairwise_distance(
+                    self.img_size, 
+                    self.region_size_[plane_idx * self.max_num_segments + r1], 
+                    self.bbox_xywh_[plane_idx * self.max_num_segments + r1], 
+                    self.color_hist_[plane_idx * self.max_num_segments + r1], 
+                    self.texture_hist_[plane_idx * self.max_num_segments + r1], 
+                    self.region_size_[plane_idx * self.max_num_segments + r2], 
+                    self.bbox_xywh_[plane_idx * self.max_num_segments + r2], 
+                    self.color_hist_[plane_idx * self.max_num_segments + r2], 
+                    self.texture_hist_[plane_idx * self.max_num_segments + r2], 
+                    *regs[ww]['strategy'],
+                    buf = self.buf
+                )
+
+                new_edges.append((-aff, ww, vv))
+                self.compute_region_affinity_time += time.time() - tic; self.compute_region_affinity_counter += 1
 
                 graph[vv].remove(uu)
                 graph[vv].add(ww)
@@ -398,62 +428,60 @@ class HandcraftedRegionFeatures:
         # needed to work around https://github.com/pytorch/pytorch/issues/61819
         reg_lab_int64 = reg_lab.to(torch.int64)
         # BxCxGxS 
-        self.region_sizes = area_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments, dtype = torch.int32)
+        self.region_size = area_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments, dtype = torch.int32)
         # BxCxGxSx4
-        self.xywh = bbox_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments, dtype = torch.int16)
+        self.bbox_xywh = bbox_per_segment(reg_lab_int64, max_num_segments = self.max_num_segments, dtype = torch.int16)
 
         # BxCxGx3x(HW), img_bins is broadcasted
         I = (reg_lab[..., None, :, :] * color_hist_bins + imgs_bins).flatten(start_dim = -2)
         # BxCxGxSxD1 (f32) where S = #segments and D1 = 96
         self.color_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, self.max_num_segments * color_hist_bins, dtype = torch.float32).scatter_add_(-1, I.to(torch.int64), expand_ones_like(I, dtype = torch.float32)).unflatten(-1, (self.max_num_segments, color_hist_bins)).movedim(-2, -3).flatten(start_dim = -2)
         # for histogram normalization, each pixel contributes to 3 = #colorchannels bins, eps to avoid divbyzero and nans in affinity
-        self.color_hist /= self.region_sizes.mul(float(imgs_bins.shape[-3])).add_(eps).unsqueeze(-1)
-        # 3*N (f32) where 3 = #colorchannels, N = #colorbins
-        self.color_hist_buffer = torch.empty(self.color_hist.shape[-1], dtype = self.color_hist.dtype)
+        self.color_hist /= self.region_size.mul(float(imgs_bins.shape[-3])).add_(eps).unsqueeze(-1)
 
         # BxCxGx3xRx(HW), grads_bins is broadcasted
         I = (reg_lab[..., None, None, :, :] * texture_hist_bins + grads_bins).flatten(start_dim = -2)
         # BxCxGxSxD2 (f32) where S = #segments and D1 = 192
         self.texture_hist = torch.zeros(*reg_lab.shape[:-2], img_channels, grads_bins.shape[-3], self.max_num_segments * texture_hist_bins, dtype = torch.float32).scatter_add_(-1, I.to(torch.int64), expand_ones_like(I, dtype = torch.float32)).unflatten(-1, (self.max_num_segments, texture_hist_bins)).movedim(-2, -4).flatten(start_dim = -3)
         # for histogram normalization, each pixel contributes to (3 = #colorchannels) * (8 = #rotations) bins, maybe except exactly 0textures which contribute to several bins, eps to avoid divbyzero and nans in affinity
-        self.texture_hist /= self.region_sizes.mul(float(grads_bins.shape[-4] * grads_bins.shape[-3])).add_(eps).unsqueeze(-1)
-        # 3*N (f32) where 3 = #colorchannels, N = #texturebins
-        self.texture_hist_buffer = torch.empty(self.texture_hist.shape[-1], dtype = self.texture_hist.dtype)
-
-    def compute_region_affinity(self, r1 = None, r2 = None, plane_idx = None, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0):
-        if r1 is None and r2 is None:
-            size_affinity = self.region_sizes.unsqueeze(-1).add(self.region_sizes.unsqueeze(-2)).div(-float(self.img_size)).add_(1).clamp_(min = 0, max = 1)
-            fill_affinity = bbox_merge_tensor(self.xywh.unsqueeze(-2), self.xywh.unsqueeze(-3), dtype = self.region_sizes.dtype).sub_(self.region_sizes.unsqueeze(-1)).sub_(self.region_sizes.unsqueeze(-2)).div(-float(self.img_size)).add_(1).clamp_(min = 0, max = 1)
-            color_affinity = torch.min(self.color_hist.unsqueeze(-2), self.color_hist.unsqueeze(-3)).sum(dim = -1)
-            texture_affinity = torch.min(self.texture_hist.unsqueeze(-2), self.texture_hist.unsqueeze(-3)).sum(dim = -1)
-            return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
-    
-        else:
-            plane_idx *= self.max_num_segments
-            
-            res = 0.0
-            res += 0 if size  == 0 else size * max(0, min(1, 1 - (self.region_sizes_[plane_idx + r1] + self.region_sizes_[plane_idx + r2]) / self.img_size))
-            res += 0 if fill  == 0 else fill * max(0, min(1, 1 - (bbox_merge(self.xywh_[plane_idx + r1], self.xywh_[plane_idx + r2], return_area = True) - self.region_sizes_[plane_idx + r1] - self.region_sizes_[plane_idx + r2]) / self.img_size))
-            res += 0 if color == 0 else color * float(torch.min(self.color_hist_[plane_idx + r1], self.color_hist_[plane_idx + r2], out = self.color_hist_buffer).sum(dim = -1))
-            res += 0 if texture == 0 else texture * float(torch.min(self.texture_hist_[plane_idx + r1], self.texture_hist_[plane_idx + r2], out = self.texture_hist_buffer).sum(dim = -1))
-            return res
-    
-    def merge_regions_(self, r1, r2, plane_idx) -> tuple:
-        plane_idx *= self.max_num_segments
-        
-        s1, s2 = self.region_sizes_[plane_idx + r1], self.region_sizes_[plane_idx + r2]
-        s1s2 = s1 + s2
-
-        self.region_sizes_[plane_idx + r2] = self.region_sizes_[plane_idx + r1] = s1s2
-        self.xywh_[plane_idx + r2] = self.xywh_[plane_idx + r1] = bbox_merge(self.xywh_[plane_idx + r1], self.xywh_[plane_idx + r2])
-        self.color_hist_[plane_idx + r2].copy_(self.color_hist_[plane_idx + r1].mul_(s1).add_(self.color_hist_[plane_idx + r2].mul_(s2)).div_(s1s2))
-        self.texture_hist_[plane_idx + r2].copy_(self.texture_hist_[plane_idx + r1].mul_(s1).add_(self.texture_hist_[plane_idx + r2].mul_(s2)).div_(s1s2))
-        
-        return self.xywh_[plane_idx + r2]
-
+        self.texture_hist /= self.region_size.mul(float(grads_bins.shape[-4] * grads_bins.shape[-3])).add_(eps).unsqueeze(-1)
+        #
+        self.buf = torch.empty(max(self.texture_hist.shape[-1], self.color_hist.shape[-1]), dtype = torch.float32)
         
     def repeat_for_strategies_and_flatten(self, num_strategies):
-        self.region_sizes_ = self.region_sizes.flatten(end_dim = -2).unsqueeze(-2).repeat(1, num_strategies, 1).flatten().tolist()
-        self.xywh_ = self.xywh.flatten(end_dim = -3).unsqueeze(-3).repeat(1, num_strategies, 1, 1).flatten(end_dim = -2).tolist()
+        self.region_size_ = self.region_size.flatten(end_dim = -2).unsqueeze(-2).repeat(1, num_strategies, 1).flatten().tolist()
+        self.bbox_xywh_ = self.bbox_xywh.flatten(end_dim = -3).unsqueeze(-3).repeat(1, num_strategies, 1, 1).flatten(end_dim = -2).tolist()
         self.color_hist_ = self.color_hist.flatten(end_dim = -3).unsqueeze(-3).repeat(1, num_strategies, 1, 1).flatten(end_dim = -2)
         self.texture_hist_ = self.texture_hist.flatten(end_dim = -3).unsqueeze(-3).repeat(1, num_strategies, 1, 1).flatten(end_dim = -2)
+        
+    def merge_regions_(self, r1, r2, plane_idx) -> dict:
+        s1, s2 = self.region_size_[plane_idx * self.max_num_segments + r1], self.region_size_[plane_idx * self.max_num_segments + r2]
+        s1s2 = s1 + s2
+
+        self.region_size_[plane_idx * self.max_num_segments + r2] = self.region_size_[plane_idx * self.max_num_segments + r1] = s1s2
+        self.bbox_xywh_[plane_idx * self.max_num_segments + r2] = self.bbox_xywh_[plane_idx * self.max_num_segments + r1] = bbox_merge_tuple(self.bbox_xywh_[plane_idx * self.max_num_segments + r1], self.bbox_xywh_[plane_idx * self.max_num_segments + r2], return_area = False)
+        self.color_hist_[plane_idx * self.max_num_segments + r2].copy_(self.color_hist_[plane_idx * self.max_num_segments + r1].mul_(s1).add_(self.color_hist_[plane_idx * self.max_num_segments + r2].mul_(s2)).div_(s1s2))
+        self.texture_hist_[plane_idx * self.max_num_segments + r2].copy_(self.texture_hist_[plane_idx * self.max_num_segments + r1].mul_(s1).add_(self.texture_hist_[plane_idx * self.max_num_segments + r2].mul_(s2)).div_(s1s2))
+        
+        return dict(
+            region_size = self.region_size_[plane_idx * self.max_num_segments + r1], 
+            bbox_xywh = self.bbox_xywh_[plane_idx * self.max_num_segments + r1], 
+            color_hist = self.color_hist_[plane_idx * self.max_num_segments + r1], 
+            texture_hist = self.texture_hist_[plane_idx * self.max_num_segments + r1]
+        )
+
+    @staticmethod
+    def compute_region_affinity_pdist(img_size, region_size, bbox_xywh, color_hist, texture_hist):
+        size_affinity = region_size.unsqueeze(-1).add(region_size.unsqueeze(-2)).div(-float(img_size)).add_(1).clamp_(min = 0, max = 1)
+        fill_affinity = bbox_merge_tensor(bbox_xywh.unsqueeze(-2), bbox_xywh.unsqueeze(-3), dtype = region_size.dtype, return_area = True).sub_(region_size.unsqueeze(-1)).sub_(region_size.unsqueeze(-2)).div(-float(img_size)).add_(1).clamp_(min = 0, max = 1)
+        color_affinity = torch.min(color_hist.unsqueeze(-2), color_hist.unsqueeze(-3)).sum(dim = -1)
+        texture_affinity = torch.min(texture_hist.unsqueeze(-2), texture_hist.unsqueeze(-3)).sum(dim = -1)
+        return torch.stack([fill_affinity, texture_affinity, size_affinity, color_affinity], dim = -1)
+    
+    @staticmethod
+    def compute_region_affinity_pairwise_distance(img_size, region_size_1, bbox_xywh_1, color_hist_1, texture_hist_1, region_size_2, bbox_xywh_2, color_hist_2, texture_hist_2, fill = 0.0, texture = 0.0, size = 0.0, color = 0.0, buf = None):
+        size = 0.0 if size  == 0 else size * max(0, min(1, 1 - (region_size_1 + region_size_2) / img_size))
+        fill = 0.0 if fill  == 0 else fill * max(0, min(1, 1 - (bbox_merge_tuple(bbox_xywh_1, bbox_xywh_2, return_area = True) - region_size_1 - region_size_2) / img_size))
+        color= 0.0 if color == 0 else color * float(torch.min(color_hist_1, color_hist_2, out = None if buf is None else buf.resize_(0)).sum(dim = -1))
+        texture = 0.0 if texture == 0 else texture * float(torch.min(texture_hist_1, texture_hist_2, out = None if buf is None else buf.resize_(0)).sum(dim = -1))
+        return fill + texture + size + color
