@@ -338,15 +338,14 @@ class SelectiveSearch(torch.nn.Module):
                 continue
             
             reg_fro, reg_to = regs[u], regs[v]
-            regs.append( dict(strategy = reg_fro['strategy'], plane_id = reg_fro['plane_id'], plane_idx = reg_fro['plane_idx'], id = min(reg_fro['id'], reg_to['id']), ids = reg_fro['ids'] | reg_to['ids'], idx = len(regs), parent_idx = -1, level = 1 + max(reg_fro['level'], reg_to['level']), texture_hist = None, color_Hist = None, region_size = None) )
+            regs.append( dict(strategy = reg_fro['strategy'], plane_id = reg_fro['plane_id'], plane_idx = reg_fro['plane_idx'], id = min(reg_fro['id'], reg_to['id']), ids = reg_fro['ids'] | reg_to['ids'], idx = len(regs), parent_idx = -1, level = 1 + max(reg_fro['level'], reg_to['level'])) )
             reg_fro['parent_idx'] = reg_to['parent_idx'] = len(regs) - 1
             tic = time.time()
             merged : dict = region_features.merge_regions_(reg_fro['id'], reg_to['id'], reg_fro['plane_idx'])
             regs[-1]['bbox_xywh'] = merged['bbox_xywh']
             regs[-1]['region_size'] = merged['region_size']
-            if self.return_region_features:
-                regs[-1]['texture_hist'] = merged['texture_hist'].clone()
-                regs[-1]['color_hist'] = merged['color_hist'].clone()
+            regs[-1]['texture_hist'] = merged['texture_hist'].clone() if self.return_region_features else None
+            regs[-1]['color_hist'] = merged['color_hist'].clone() if self.return_region_features else None
             region_features.merge_regions_time += time.time() - tic; region_features.merge_regions_counter += 1
 
             for new_edge in self.contract_graph_edge(region_features, u, v, reg_fro['parent_idx'], regs, graph):
