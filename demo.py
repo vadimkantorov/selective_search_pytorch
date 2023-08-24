@@ -75,6 +75,7 @@ def main(img_rgbhw3_255, gradio, input_path, output_dir, preset, algo, remove_du
 
     elif algo == 'opencv':
         algo = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
+
         img_bgrhw3_255 = img_rgbhw3_255[..., ::-1].copy()
 
         algo.setBaseImage(img_bgrhw3_255)
