@@ -24,6 +24,8 @@ wget https://raw.githubusercontent.com/opencv/opencv_contrib/71f9dbd144c0e32b877
 wget https://raw.githubusercontent.com/opencv/opencv_contrib/71f9dbd144c0e32b87746843d4497aea0562a1fe/modules/ximgproc/src/graphsegmentation.cpp
 wget https://raw.githubusercontent.com/opencv/opencv_contrib/71f9dbd144c0e32b87746843d4497aea0562a1fe/modules/ximgproc/src/edgeboxes.cpp
 wget https://raw.githubusercontent.com/opencv/opencv_contrib/71f9dbd144c0e32b87746843d4497aea0562a1fe/modules/ximgproc/include/opencv2/ximgproc/edgeboxes.hpp
+wget https://raw.githubusercontent.com/opencv/opencv_contrib/2bc3e1a169afd2675ef68221176f32cc0ea5427a/modules/ximgproc/src/structured_edge_detection.cpp
+
 ```
 
 ```diff
