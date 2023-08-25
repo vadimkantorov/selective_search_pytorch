@@ -7,6 +7,67 @@ import numpy as np
 import matplotlib, matplotlib.pyplot as plt
 import cv2
 
+def computeOrientation(src, gradientNormalizationRadius = 4, eps = 1e-5):
+    assert src.dtype == np.float32 and src.ndim == 2
+    
+    nrml = (gradientNormalizationRadius + 1.0) ** 2
+    kernelXY = np.array([(i + 1) / nrml for i in range(1 + gradientNormalizationRadius)] + [(i + 1) / nrml for i in range(0 + gradientNormalizationRadius)][::-1])
+    E_conv = cv2.sepFilter2D(src, -1, kernelXY, kernelXY)
+    
+    Oxx = cv2.Sobel(E_conv, -1, 2, 0)
+    Oxy = cv2.Sobel(E_conv, -1, 1, 1)
+    Oyy = cv2.Sobel(E_conv, -1, 0, 2)
+    
+    xysign = -np.sign(Oxy)
+    arctan = np.arctan(Oyy * xysign / (Oxx + eps))
+    dst = np.fmod(np.where(arctan > 0, arctan, arctan + math.pi), math.pi)
+
+    return dst
+ 
+def edgesNms(E, O, r : int = 2):
+    assert E.dtype == np.float32 and E.ndim == 2
+    assert O.dtype == np.float32 and O.ndim == 2
+    
+    Ocos = np.cos(O)
+    Osin = np.sin(O)
+    
+    Ocos_t = Ocos.T
+    Osin_t = Osin.T
+    O_t = O.T
+    E_t = E.T
+    dst_t = np.zeros_like(E_t)
+
+    for x in range(E.shape[1]):
+        for y in range(E.shape[0]):
+            e = dst_t[x, y] = E_t[x, y]
+            (coso, sino) = (Ocos_t[x, y], Osin_t[x, y])
+            
+            if e == 0:
+                continue
+
+            for d in sorted(set(range(-r, r + 1)) - set([0])):
+                xdcos = max(0, min(x+d*coso, E.shape[1] - 1.001))
+                ydsin = max(0, min(y+d*sino, E.shape[0] - 1.001))
+                
+                (x0, y0) = (int(xdcos), int(ydsin))
+                (x1, y1) = (x0 + 1, y0 + 1)
+                (dx0, dy0) = (xdcos - x0, ydsin - y0)
+                (dx1, dy1) = (1 - dx0, 1 - dy0)
+                # bilinear interpolation
+                e0 =  E_t[x0, y0] * dx1 * dy1 + E_t[x1, y0] * dx0 * dy1 + E_t[x0, y1] * dx1 * dy0 + E_t[x1, y1] * dx0 * dy0
+
+                if e < e0:
+                    dst_t[x, y] = 0
+                    break
+
+  
+    return dst_t.T
+
+#######################################3
+#######################################3
+#######################################3
+#######################################3
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--sed-model-path', default = 'examples/model.yml.gz')
 parser.add_argument('--input-path', '-i', default = 'examples/astronaut.jpg')
@@ -23,7 +84,11 @@ img_rgbhw3_1 = plt.imread(args.input_path).astype('float32') / 255.0
 sed = cv2.ximgproc.createStructuredEdgeDetection(args.sed_model_path)
 edges  = sed.detectEdges(img_rgbhw3_1)
 orimap = sed.computeOrientation(edges)
+orimap_ = computeOrientation(edges)
 edges_nms  = sed.edgesNms(edges, orimap)
+edges_nms_  = edgesNms(edges, orimap)
+breakpoint()
+
 
 edge_boxes = cv2.ximgproc.createEdgeBoxes()
 edge_boxes.setMaxBoxes(args.topk)
@@ -90,83 +155,3 @@ print(output_path)
 #convertScaleAbs( grad_x, abs_grad_x );
 #convertScaleAbs( grad_y, abs_grad_y );
 #addWeighted( abs_grad_x, 0.5, abs_grad_y, 0.5, 0, grad );
-
-def computeOrientation(src, gradientNormalizationRadius = 4, eps = 1e-5):
-    assert src.dtype == np.float32 and src.ndim == 2
-    
-    nrml = (gradientNormalizationRadius + 1.0) ** 2
-    kernelXY_half = [(i + 1) / nrml for i in range(1 + rad)] + [(i + 1) / nrml for i in range(0 + rad)][::-1]
-    E_conv = cv2.sepFilter2D(src, -1, kernelXY, kernelXY)
-    
-    Oxx = cv2.Sobel(E_conv, -1, 2, 0)
-    Oxy = cv2.Sobel(E_conv, -1, 1, 1)
-    Oyy = cv2.Sobel(E_conv, -1, 0, 2)
-    
-    xysign = -((Oxy > 0) - (Oxy < 0)) # -np.sign(Oxy, dtype = np.int8)
-    atan = np.atan(Oyy * xysign / (Oxx + eps))
-    dst = np.fmod(np.where(atan > 0, atan, atan + math.pi), math.pi)
-
-    return dst
- 
-def edgesNms(E, O, r : int = 2, s : int = 0, m : float = 1)
-# The function suppress edges where edge is stronger in orthogonal direction
-# r : radius for NMS suppression.
-# s : radius for boundary suppression.
-# m : multiplier for conservative suppression.
-    assert E.dtype == np.float32 and E.ndim == 2
-    assert O.dtype == np.float32 and O.ndim == 2
-    
-    Ocos = np.cos(O)
-    Osin = np.sin(O)
-    
-    Ocost_t = Ocos.T
-    Osin_t = Osin.T
-    O_t = O.T
-    E_t = E.T
-    dst_t = np.zeros_like(E_t)
-
-    for x in range(E.shape[1]):
-        for y in range(E.shape[0]):
-            e = dst_t[x, y] = E_t[x, y]
-            (coso, sino) = (Ocos_t[x, y], Osin_t[x, y])
-            
-            if e == 0:
-                continue
-            e *= m
-
-            for d in range(-r, 1 + r):
-                if d != 0:
-                    (xdcos, ydsin) = (x+d*coso, y+d*sino)
-
-                    xdcos = (E.shape[1] - 1.001f if xdcos > E.shape[1] - 1.001f else xdcos) if xdcos >= 0 else 0
-                    ydsin = (E.shape[0] - 1.001f if ydsin > E.shape[0] - 1.001f else ydsin) if ydsin >= 0 else 0
-                    
-                    (x0, y0) = (int(xdcos), int(ydsin))
-                    (x1, y1) = (x0 + 1, y0 + 1)
-                    (dx0, dy0) = (xdcos - x0, ydsin - y0)
-                    (dx1, dy1) = (1 - dx0, 1 - dy0)
-
-                    e0 =E_t[x0, y0] * dx1 * dy1 +
-                        E_t[x1, y0] * dx0 * dy1 +
-                        E_t[x0, y1] * dx1 * dy0 +
-                        E_t[x1, y1] * dx0 * dy0
-
-                    if e < e0:
-                        dst_t[x, y] = 0
-                        break
-
-    
-    s = E.shape[1] / 2 if s > E.shape[1] / 2 else s
-    s = E.shape[0] / 2 if s > E.shape[0] / 2 else s
-    
-    for x in range(s):
-        for y in range(E.shape[0]):
-            dst_t[x, y] *= x / float(s)
-            dst_t[E.shape[1] - 1 - x, y] *= x / float(s)
-
-    for x in range(E.shape[1]): 
-        for y in range(s):
-            dst_t[x, y] *= y / float(s)
-            dst_t[x, E.shape[0] - 1 - y] *= y / float(s)
-  
-  return dst_t.T
