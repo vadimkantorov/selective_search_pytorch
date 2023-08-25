@@ -20,14 +20,15 @@ def computeOrientation(src, gradientNormalizationRadius = 4, eps = 1e-5):
     
     xysign = -np.sign(Oxy)
     arctan = np.arctan(Oyy * xysign / (Oxx + eps))
-    dst = np.fmod(np.where(arctan > 0, arctan, arctan + math.pi), math.pi)
+    res = np.fmod(np.where(arctan > 0, arctan, arctan + math.pi), math.pi)
 
-    return dst
+    return res
  
-def edgesNms(E, O, r : int = 2):
+def edgesNms(E, O, r = 2):
     assert E.dtype == np.float32 and E.ndim == 2
     assert O.dtype == np.float32 and O.ndim == 2
     
+    res = np.zeros_like(E)
     Ocos = np.cos(O)
     Osin = np.sin(O)
     
@@ -35,33 +36,31 @@ def edgesNms(E, O, r : int = 2):
     Osin_t = Osin.T
     O_t = O.T
     E_t = E.T
-    dst_t = np.zeros_like(E_t)
 
     for x in range(E.shape[1]):
         for y in range(E.shape[0]):
-            e = dst_t[x, y] = E_t[x, y]
+            e = res[y, x] = E_t[x, y]
             (coso, sino) = (Ocos_t[x, y], Osin_t[x, y])
             
             if e == 0:
                 continue
 
             for d in sorted(set(range(-r, r + 1)) - set([0])):
-                xdcos = max(0, min(x+d*coso, E.shape[1] - 1.001))
-                ydsin = max(0, min(y+d*sino, E.shape[0] - 1.001))
+                xdcos = max(0, min(x + d * coso, E.shape[1] - 1.001))
+                ydsin = max(0, min(y + d * sino, E.shape[0] - 1.001))
                 
+                # bilinear interpolation
                 (x0, y0) = (int(xdcos), int(ydsin))
                 (x1, y1) = (x0 + 1, y0 + 1)
                 (dx0, dy0) = (xdcos - x0, ydsin - y0)
                 (dx1, dy1) = (1 - dx0, 1 - dy0)
-                # bilinear interpolation
                 e0 =  E_t[x0, y0] * dx1 * dy1 + E_t[x1, y0] * dx0 * dy1 + E_t[x0, y1] * dx1 * dy0 + E_t[x1, y1] * dx0 * dy0
 
-                if e < e0:
-                    dst_t[x, y] = 0
+                if e == 0 or e < e0:
+                    res[y, x] = 0
                     break
 
-  
-    return dst_t.T
+    return res
 
 #######################################3
 #######################################3
