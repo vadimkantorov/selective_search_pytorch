@@ -2,6 +2,7 @@ import argparse
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision
 
 import selectivesearchsegmentation
@@ -13,9 +14,8 @@ import hypadam
 class MergedRegionsForestDataset(torch.utils.data.Dataset):
     def __init__(self, regions):
         dist = self.calc_tree_dist(regions)
-        self.sim_graph = (1 - dist / dist.amax()).clamp_(min = 0.01)
-        self.sim_graph.diagonal().fill_(1)
-        
+        #self.sim_graph = (1 - dist / dist.amax()).clamp_(min = 0.01).fill_diagonal_(1)
+        self.sim_graph = torch.where(dist < 5, 1.0, 0.01).fill_diagonal_(1)
         self.triples = self.generate_triples()
 
     def __len__(self):
@@ -23,10 +23,10 @@ class MergedRegionsForestDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         triple = self.triples[idx]
-        s12 = self.sim_graph[triple[0], triple[1]]
-        s13 = self.sim_graph[triple[0], triple[2]]
-        s23 = self.sim_graph[triple[1], triple[2]]
-        sim_graph = torch.tensor([s12, s13, s23])
+        s01 = self.sim_graph[triple[0], triple[1]]
+        s02 = self.sim_graph[triple[0], triple[2]]
+        s12 = self.sim_graph[triple[1], triple[2]]
+        sim_graph = torch.tensor([s01, s02, s12])
         return triple, sim_graph
     
     def generate_triples(self):
@@ -43,13 +43,10 @@ class MergedRegionsForestDataset(torch.utils.data.Dataset):
         adj[u, v] = True
         adj[v, u] = True
 
-        dist = torch.full_like(adj, float('inf'), dtype = torch.float32).masked_fill_(adj, 1.0)
-        dist.diagonal().fill_(0)
-
+        dist = torch.full_like(adj, float('inf'), dtype = torch.float32).masked_fill_(adj, 1.0).fill_diagonal_(0)
         for k in range(dist.shape[-1]):
             dist = torch.min(dist, dist[:, k, None] + dist[None, k, :])
 
-        # assert dist.isfinite().all()
         return dist
 
 class HypHCVisualEmbedding(nn.Embedding):
@@ -61,20 +58,21 @@ class HypHCVisualEmbedding(nn.Embedding):
         self.scale = nn.Parameter(torch.tensor([init_size]))
         
         with torch.no_grad():
-            self.weight.copy_(hyplcapoincare.project(torch.nn.init.uniform_(self.weight, 0.0, 1.0).mul_(2.0).sub_(1.0).mul_(self.scale)))
+            #self.weight.copy_(hyplcapoincare.project(torch.nn.init.uniform_(self.weight, 0.0, 1.0).mul_(2.0).sub_(1.0).mul_(self.scale)))
+            self.weight.copy_(torch.nn.init.uniform_(self.weight, 0.0, 1.0).mul_(2.0).sub_(1.0).mul_(self.scale))
 
     def forward(self, x : 'B3') -> 'B3D':
-        return torch.nn.functional.normalize(super().forward(x), p = 2, dim = -1) * self.scale.clamp(max = self.max_norm_, min = 1e-2) #self.init_size
+        return F.normalize(super().forward(x), p = 2, dim = -1) * self.scale.clamp(max = self.max_norm_, min = 1e-2) #self.init_size
 
     def loss(self, emb_pred : 'B3D', sim_gt : 'B3 # [s12, s13, s23]', temperature: float = 0.01):
-        e1, e2, e3 = emb_pred.unbind(-2)
+        e0, e1, e2 = emb_pred.unbind(-2)
+        d_01 = hyplcapoincare.hyp_lca(e0, e1, return_coord=False)
+        d_02 = hyplcapoincare.hyp_lca(e0, e2, return_coord=False)
         d_12 = hyplcapoincare.hyp_lca(e1, e2, return_coord=False)
-        d_13 = hyplcapoincare.hyp_lca(e1, e3, return_coord=False)
-        d_23 = hyplcapoincare.hyp_lca(e2, e3, return_coord=False)
-        lca_norm = torch.cat([d_12, d_13, d_23], dim=-1)
-        weights = torch.softmax(lca_norm / temperature, dim=-1)
-        w_ord = torch.sum(sim_gt * weights, dim=-1, keepdim=True)
-        total = torch.sum(sim_gt, dim=-1, keepdim=True) - w_ord
+        weights = torch.softmax(torch.cat([d_01, d_02, d_12], dim=-1) / temperature, dim=-1)
+        print(weights)
+        #total = torch.sum(sim_gt, dim=-1, keepdim=True) - torch.sum(sim_gt * weights, dim=-1, keepdim=True)
+        total = (-sim_gt * weights).sum(dim=-1)
         return torch.mean(total)
 
 
@@ -84,15 +82,15 @@ def main(args):
     selsearch = selectivesearchsegmentation.SelectiveSearch(preset = 'single')
     
     img = torchvision.io.read_image(args.input_path) / 255.0
-    boxes_xywh, regions, reg_lab = selsearch(img.unsqueeze(0))
+    boxes_xywh, regions, reg_lab = selsearch(img_rgbb3hw_1 = img.unsqueeze(0).contiguous())
     regions = regions[0]
 
     dataset = MergedRegionsForestDataset(regions)
     data_loader = torch.utils.data.DataLoader(dataset, batch_size = args.batch_size, num_workers = args.num_workers, shuffle = True, pin_memory = True)
     
     model = HypHCVisualEmbedding(dataset.sim_graph.shape[0], args.embedding_dim)
-    optimizer = hypadam.RiemannianAdam(model.parameters(), lr = args.lr)
-
+    #optimizer = hypadam.RiemannianAdam(model.parameters(), lr = args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr = args.lr)
     for step, (triple_ids, sim_gt) in enumerate(data_loader):
         inp_ids, sim_gt = triple_ids.to(args.device), sim_gt.to(args.device)
         emb_pred = model(inp_ids)
@@ -101,7 +99,7 @@ def main(args):
         loss.backward()
         optimizer.step()
         if step % 100 == 0:
-            print(step, '/', len(data_loader), float(loss), float(model.scale))
+            print(step, '/', len(data_loader), float(loss))
 
     
 if __name__ == '__main__':
