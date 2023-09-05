@@ -1,2 +1,5 @@
 __pycache__
 *.so
+*.png
+*.jpg
+out
