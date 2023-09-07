@@ -10,12 +10,12 @@
 
 #include "graphsegmentation.cpp"
 
-//#include "edgeboxes.hpp"
-//#include "edgeboxes.cpp"
-
 //#include "selectivesearchsegmentation.cpp"
-
 #include "selectivesearchsegmentation_.cpp"
+
+#include "edgeboxes.hpp"
+#include "edgeboxes.cpp"
+
 
 extern "C" int process(
     uint8_t* img_ptr, int32_t img_rows, int32_t img_cols,
