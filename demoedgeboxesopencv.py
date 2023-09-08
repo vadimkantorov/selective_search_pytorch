@@ -17,22 +17,18 @@ def edgesSpatialGrads(img, mode = 'canny'):
         return cv2.Canny(image = img_gray_blur, threshold1 = 100, threshold2 = 200)
     
     if mode == 'sobel':
-        #grad_x = cv2.Sobel(src=img_blur, ddepth=cv2.CV_64F, dx=1, dy=0, ksize=5) # Sobel Edge Detection on the X axis
-        #grad_y = cv2.Sobel(src=img_blur, ddepth=cv2.CV_64F, dx=0, dy=1, ksize=5) # Sobel Edge Detection on the Y axis
-        #grad_xy = cv2.Sobel(src=img_blur, ddepth=cv2.CV_64F, dx=1, dy=1, ksize=5) # Combined X and Y Sobel Edge Detection
-
         #https://docs.opencv.org/3.4/d2/d2c/tutorial_sobel_derivatives.html
         #https://learnopencv.com/edge-detection-using-opencv/
-        grad_x = cv2.Sobel(src_gray_blur, ddepth = -1, dx = 1, dy = 0, ksize = 3, scale = 1, delta = 0, borderType = cv2.BORDER_DEFAULT )
-        grad_y = cv2.Sobel(src_gray_blur, ddepth = -1, dx = 0, dy = 1, ksize = 3, scale = 1, delta = 0, borderType = cv2.BORDER_DEFAULT )
-        return (np.abs(grad_x) + np.abs(grady_y)) / 2.0
+        grad_x = cv2.Sobel(img_gray_blur, ddepth = -1, dx = 1, dy = 0, ksize = 3, scale = 1, delta = 0, borderType = cv2.BORDER_DEFAULT)
+        grad_y = cv2.Sobel(img_gray_blur, ddepth = -1, dx = 0, dy = 1, ksize = 3, scale = 1, delta = 0, borderType = cv2.BORDER_DEFAULT)
+        return np.abs(grad_x) + np.abs(grady_y)
 
 def computeOrientation(E, gradientNormalizationRadius = 4, eps = 1e-5):
     assert E.dtype == np.float32 and E.ndim == 2
     
     nrml = (gradientNormalizationRadius + 1.0) ** 2
     kernelXY = np.array([(i + 1) / nrml for i in range(1 + gradientNormalizationRadius)] + [(i + 1) / nrml for i in range(0 + gradientNormalizationRadius)][::-1])
-    E_conv = cv2.sepFilter2D(E, -1, kernelXY, kernelXY)
+    E_conv = cv2.sepFilter2D(E, ddepth = -1, kernelX = kernelXY, kernelY = kernelXY)
     
     Oxx = cv2.Sobel(E_conv, ddepth = -1, dx = 2, dy = 0)
     Oxy = cv2.Sobel(E_conv, ddepth = -1, dx = 1, dy = 1)
@@ -149,6 +145,5 @@ if __name__ == '__main__':
         plt.axis('off')
 
     plt.savefig(output_path, dpi = 300)
-    plt.close()
 
     print(output_path)
