@@ -41,6 +41,7 @@ def computeOrientation(E, gradientNormalizationRadius = 4, eps = 1e-5):
     return res
  
 def edgesNms(E, O, r = 2):
+    # https://github.com/pdollar/edges/blob/master/private/edgesNmsMex.cpp
     assert E.dtype == np.float32 and E.ndim == 2
     assert O.dtype == np.float32 and O.ndim == 2
     
@@ -88,7 +89,7 @@ if __name__ == '__main__':
     img_rgbhw3_255 = plt.imread(args.input_path)
     img_rgbhw3_1 = np.divide(img_rgbhw3_255, 255, dtype = 'float32')
 
-    edges_sed = cv2.ximgproc.createStructuredEdgeDetection(args.sed_model_path).detectEdges(img_rgbhw3_1) # orimap = sed.computeOrientation(edges) # edges_nms  = sed.edgesNms(edges, orimap)
+    edges_sed = cv2.ximgproc.createStructuredEdgeDetection(args.sed_model_path).detectEdges(img_rgbhw3_1) # orimap_sed = sed.computeOrientation(edges_sed) # edgesnms_sed  = sed.edgesNms(edges_sed, orimap_sed)
     orimap_sed = computeOrientation(edges_sed)
     edgesnms_sed  = edgesNms(edges_sed, orimap_sed)
 
